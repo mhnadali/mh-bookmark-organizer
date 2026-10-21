@@ -1,5 +1,5 @@
 # Tools CI runs (and a contributor needs): pinned to the exact versions the project was last checked with.
 # Dependabot proposes updates; the library itself needs none of them (standard library only).
-ruff==0.16.8
-mypy==2.3.1
+ruff==0.17.1
+mypy==2.4.0
 coverage==7.16.2
