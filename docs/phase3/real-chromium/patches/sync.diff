@@ -1,0 +1,167 @@
+--- a/scripts/mhbm/sync.py
++++ b/scripts/mhbm/sync.py
+@@ -9,6 +9,9 @@
+ from __future__ import annotations
+ 
+ import json
++import os
++import platform
++import re
+ import shutil
+ import time
+ import uuid
+@@ -16,20 +19,34 @@
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+-from .formats import CHROME_ROOTS, WEBKIT_EPOCH_OFFSET, chrome_checksum, parse_chrome
++from .formats import CHROME_ROOTS, WEBKIT_EPOCH_OFFSET, chrome_checksum, chrome_url_ok, parse_chrome
+ from .model import esc_name, unesc_name
+-from .urlnorm import normalize_url
++from .urlnorm import browser_key
+ 
+ _GUID_NS = uuid.UUID("6b9f3c52-7a41-4f0e-9d6a-2f0f4f0b8c11")
+ ROOT_BY_NAME = {v: k for k, v in CHROME_ROOTS.items()}
++_BROWSER_BLANKS = re.compile("[\t\r\n\u2028\u2029]")
+ 
+ 
+ class SyncError(ValueError):
+     pass
+ 
+ 
++def browser_folder(folder: str) -> str:
++    """Where the browser file keeps a library folder: under its root if the path starts with one, else in "Other bookmarks"
++    (the same rule ``write_chrome`` and ``patch_chrome`` apply when they place a bookmark)."""
++    folder = _BROWSER_BLANKS.sub(" ", folder)   # Chromium turns tab, CR, LF, U+2028 and U+2029 in a name into a space
++    root = folder.split("/", 1)[0]
++    if root in ROOT_BY_NAME:
++        return folder
++    return f"{CHROME_ROOTS['other']}/{folder}" if folder else CHROME_ROOTS["other"]
++
++
+ def key_of(url: str, folder: str) -> str:
+-    return f"{normalize_url(url)}\u0001{folder}"
++    """Identity of a bookmark on both sides. The URL goes through ``browser_key`` (so ``a b`` equals the ``a%20b`` Chromium
++    stores) and the folder through ``browser_folder`` (so the library's ``Work`` equals the file's ``Other bookmarks/Work``);
++    without both, every such bookmark looked deleted and re-added on the next sync."""
++    return f"{browser_key(url)}\u0001{browser_folder(folder)}"
+ 
+ 
+ @dataclass
+@@ -41,6 +58,7 @@
+     retitle_local: list = field(default_factory=list)  # (library Bookmark, new title)
+     retitle_remote: list = field(default_factory=list)  # (key, new title)
+     new_folders_local: set = field(default_factory=set)
++    unsyncable: list = field(default_factory=list)     # library Bookmarks whose URL the browser would silently drop: left alone
+     unchanged: int = 0
+ 
+     @property
+@@ -52,17 +70,22 @@
+         return len(self.add_local) + len(self.delete_local) + len(self.retitle_local)
+ 
+     def summary(self) -> dict:
+-        return {"add_to_library": len(self.add_local), "delete_from_library": len(self.delete_local),
+-                "add_to_browser": len(self.add_remote), "delete_from_browser": len(self.delete_remote),
+-                "retitle_library": len(self.retitle_local), "retitle_browser": len(self.retitle_remote),
+-                "unchanged": self.unchanged}
++        out = {"add_to_library": len(self.add_local), "delete_from_library": len(self.delete_local),
++               "add_to_browser": len(self.add_remote), "delete_from_browser": len(self.delete_remote),
++               "retitle_library": len(self.retitle_local), "retitle_browser": len(self.retitle_remote),
++               "unchanged": self.unchanged}
++        if self.unsyncable:
++            out["not_syncable"] = len(self.unsyncable)
++        return out
+ 
+ 
+ def plan_sync(local, remote, baseline: dict, *, prefer: str = "remote", max_delete_frac: float = 0.2, force: bool = False) -> SyncPlan:
+     """``local``/``remote``: lists of Bookmark; ``baseline``: key -> title at the last sync (empty on the first sync)."""
+-    L = {key_of(b.url, b.folder): b for b in local}
+-    R = {key_of(b.url, b.folder): b for b in remote}
+     plan = SyncPlan()
++    plan.unsyncable = [b for b in local if not chrome_url_ok(b.url)]
++    skip = {id(b) for b in plan.unsyncable}
++    L = {key_of(b.url, b.folder): b for b in local if id(b) not in skip}
++    R = {key_of(b.url, b.folder): b for b in remote}
+     for key, lb in L.items():
+         rb = R.get(key)
+         if rb is not None:
+@@ -168,6 +191,8 @@
+         if hits:
+             hits[0][1]["name"] = title
+     for b in plan.add_remote:
++        if not chrome_url_ok(b.url):
++            continue
+         nid = str(next(counter))
+         _locate(roots, b.folder, counter)["children"].append({
+             "id": nid, "name": b.title, "type": "url", "url": b.url, "date_added": _stamp(b.added), "date_last_used": "0",
+@@ -177,16 +202,67 @@
+ 
+ 
+ def read_remote(path: Path):
+-    data = json.loads(Path(path).read_text(encoding="utf-8"))
++    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))   # Chromium itself accepts a BOM
+     return data, list(parse_chrome(data))
+ 
+ 
+ def write_remote(path: Path, data: dict) -> Path:
+-    """Write atomically, keeping a timestamped backup of the original."""
++    """Write atomically (temp file + fsync + rename), keep the original's permissions, and keep a timestamped backup."""
+     path = Path(path)
+     backup = path.with_name(f"{path.name}.mhbm-backup-{time.strftime('%Y%m%d-%H%M%S')}")
+     shutil.copy2(path, backup)
+     tmp = path.with_name(path.name + ".mhbm-tmp")
+-    tmp.write_text(json.dumps(data, indent=3, ensure_ascii=False), encoding="utf-8")
++    with open(tmp, "w", encoding="utf-8") as fh:
++        fh.write(json.dumps(data, indent=3, ensure_ascii=False))
++        fh.flush()
++        os.fsync(fh.fileno())
++    shutil.copymode(path, tmp)   # Chromium keeps the file private (0600); a fresh temp file would be 0644
+     tmp.replace(path)
+     return backup
++
++
++def write_text_atomic(path: Path, text: str) -> None:
++    """The same temp-file-and-rename write for callers that already have the text (``install-chrome``)."""
++    path = Path(path)
++    tmp = path.with_name(path.name + ".mhbm-tmp")
++    with open(tmp, "w", encoding="utf-8") as fh:
++        fh.write(text)
++        fh.flush()
++        os.fsync(fh.fileno())
++    shutil.copymode(path, tmp)
++    tmp.replace(path)
++
++
++def browser_running(profile_file: Path) -> bool:
++    """True if a Chromium-family browser is running on the profile that owns ``profile_file``.
++
++    Linux/macOS: the user-data-dir holds a ``SingletonLock`` symlink to ``<host>-<pid>``; it survives a crash, so the pid is
++    checked. Windows: the browser keeps ``lockfile`` open, so it cannot be opened for writing. Verified on Chromium 141
++    (tests/realbrowser); when in doubt (unreadable, other host) it answers False and the ``--confirm-chrome-closed`` flag remains."""
++    profile_file = Path(profile_file).resolve()
++    for root in (profile_file.parent, profile_file.parent.parent):
++        if platform.system() == "Windows":
++            lock = root / "lockfile"
++            if lock.exists():
++                try:
++                    with open(lock, "r+b"):
++                        pass
++                except PermissionError:
++                    return True
++            continue
++        lock = root / "SingletonLock"
++        if lock.is_symlink():
++            match = re.search(r"-(\d+)$", os.readlink(lock))
++            if match and _pid_alive(int(match.group(1))):
++                return True
++    return False
++
++
++def _pid_alive(pid: int) -> bool:
++    try:
++        os.kill(pid, 0)
++    except ProcessLookupError:
++        return False
++    except PermissionError:
++        return True
++    return True

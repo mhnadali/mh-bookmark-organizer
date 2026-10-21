@@ -1,0 +1,5 @@
+wal bytes before copy: 206032
+checkpoint result (busy, log, checkpointed): [(0, 0, 0)] | wal bytes now: 0
+wal bytes after one more insert: 4152
+rows visible in torn copy: (51,) (old db had 0 rows; new wal holds 1 row)
+integrity: [('ok',)]

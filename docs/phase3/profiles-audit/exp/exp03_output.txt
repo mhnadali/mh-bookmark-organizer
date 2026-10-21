@@ -1,0 +1,2 @@
+backups: ['Bookmarks.mhbm-backup-20260101-000000']
+original bookmark still recoverable from any backup: False

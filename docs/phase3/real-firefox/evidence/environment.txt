@@ -1,0 +1,51 @@
+# Binaries used (all verified by sha256 after download)
+f1b53de244dc14b0a0d2d848aa41d7cf0edb95992cd477dccac40ff4d7127f35  dl/firefox-157.0.1-hee9eb32_0.conda
+60cf809fd1aedcfe98ca558f032f756a03f0ab176e7960543c2f064645e8025a  dl/geckodriver-0.37.1-hbf1d777_0.conda
+5e67f4fa081b1b437243c464449ea1bd2a3b15b6f932487a8aa0c25aa8514600  dl/zen.linux-x86_64.tar.xz
+9edbf80d4ced1f29b1910048d75b8f23f3905576e11b859f22b38001042060b0  dl/floorp-linux-x86_64.tar.xz
+107857602 dl/firefox-157.0.1-hee9eb32_0.conda
+106758376 dl/floorp-linux-x86_64.tar.xz
+1877576 dl/geckodriver-0.37.1-hbf1d777_0.conda
+111344356 dl/zen.linux-x86_64.tar.xz
+
+# firefox --version
+Mozilla Firefox 157.0.1
+
+# application.ini (Firefox)
+Vendor=Mozilla
+Name=Firefox
+Version=157.0.1
+BuildID=20261005135250
+SourceRepository=https://hg.mozilla.org/releases/mozilla-release
+SourceStamp=737ec77d798755890b062aab541a90d6c75afd19
+distribution.ini:
+[Global]
+id=mozilla-official
+version=1.0
+about=Mozilla Firefox Official Build
+ff/bin/FirefoxApp/firefox-bin.sig
+ff/bin/FirefoxApp/firefox.sig
+ff/bin/FirefoxApp/libxul.so.sig
+
+# Zen
+Vendor=Mozilla
+Name=Zen
+Version=1.23.2b
+BuildID=20261009073723
+SourceRepository=https://github.com/zen-browser/desktop
+
+# Floorp
+Vendor=Ablaze
+Name=Floorp
+Version=12.20.1@157.0.1
+BuildID=20261008232629
+
+# python sqlite
+3.13.16 sqlite 3.45.1
+
+# places.sqlite written by Firefox 157
+user_version 87 journal_mode wal page_size 32768
+['moz_anno_attributes', 'moz_annos', 'moz_bookmarks', 'moz_bookmarks_deleted', 'moz_historyvisits', 'moz_historyvisits_extra', 'moz_inputhistory', 'moz_items_annos', 'moz_keywords', 'moz_meta', 'moz_newtab_shortcuts_interaction', 'moz_newtab_story_click', 'moz_newtab_story_impression', 'moz_origins', 'moz_places', 'moz_places_extra', 'moz_places_metadata', 'moz_places_metadata_search_queries', 'moz_previews_tombstones', 'sqlite_sequence', 'sqlite_stat1']
+moz_bookmarks cols: ['id', 'type', 'fk', 'parent', 'position', 'title', 'keyword_id', 'folder_type', 'dateAdded', 'lastModified', 'guid', 'syncStatus', 'syncChangeCounter']
+moz_places cols: ['id', 'url', 'title', 'rev_host', 'visit_count', 'hidden', 'typed', 'frecency', 'last_visit_date', 'guid', 'foreign_count', 'url_hash', 'description', 'preview_image_url', 'site_name', 'origin_id', 'recalc_frecency', 'alt_frecency', 'recalc_alt_frecency']
+roots: [(1, 0, 2, '', 'root________'), (2, 1, 2, 'menu', 'menu________'), (3, 1, 2, 'toolbar', 'toolbar_____'), (4, 1, 2, 'tags', 'tags________'), (5, 1, 2, 'unfiled', 'unfiled_____'), (6, 1, 2, 'mobile', 'mobile______'), (7, 2, 2, 'Menu folder one', 'rkN2hrAjpUZu'), (8, 7, 1, 'Menu item A', 'n_USnmECMyrB')]

@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "mhbm-realbrowser-probe",
+  "version": "0.0.1",
+  "description": "Test-only probe: lets the harness call chrome.bookmarks through the service worker.",
+  "permissions": ["bookmarks"],
+  "background": { "service_worker": "background.js" }
+}

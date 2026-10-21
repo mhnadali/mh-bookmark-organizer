@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "mh-bookmark-organizer",
+  "version": "1.5.2",
+  "description": "File new bookmarks where you would file them, and organize existing ones, using your local mh-bookmark-organizer library. Nothing leaves your computer.",
+  "minimum_chrome_version": "110",
+  "permissions": ["bookmarks", "nativeMessaging", "activeTab", "tabs"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "mh-bookmark-organizer" }
+}

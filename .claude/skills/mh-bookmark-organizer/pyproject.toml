@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mh-bookmark-organizer"
+dynamic = ["version"]
+description = "Organize, dedupe, link-check, archive, tag and search browser bookmarks. Standard library only; CLI and MCP server."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "mhnadali" }]
+keywords = ["bookmarks", "chrome", "firefox", "dedupe", "link-checker", "archive", "mcp", "model-context-protocol"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/mhnadali/mh-bookmark-organizer"
+Source = "https://github.com/mhnadali/mh-bookmark-organizer"
+Issues = "https://github.com/mhnadali/mh-bookmark-organizer/issues"
+Changelog = "https://github.com/mhnadali/mh-bookmark-organizer/blob/main/.claude/skills/mh-bookmark-organizer/CHANGELOG.md"
+Security = "https://github.com/mhnadali/mh-bookmark-organizer/blob/main/SECURITY.md"
+
+[project.optional-dependencies]
+fast = ["numpy>=1.21"]   # optional: makes training several times faster, same results
+
+[project.scripts]
+mhbm = "mhbm.cli:entry"
+mhbm-mcp = "mhbm.mcp.cli:main"   # the MCP server without importing the rest of the CLI
+
+[tool.setuptools.dynamic]
+version = { attr = "mhbm.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+
+[tool.setuptools.package-data]
+mhbm = ["data/*.json"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py39"
+src = ["scripts", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "C90", "SIM", "RUF"]
+ignore = [
+  "E501",    # long lines are fine in tables and messages; ruff format is not enforced
+  "E701", "E702",
+  "SIM108", "SIM105", "SIM102", "SIM117",
+  "B008", "B905",
+  "UP006", "UP007", "UP035", "UP037", "UP045",   # keep typing spellings that also work on 3.9 without __future__ tricks
+  "RUF001", "RUF002", "RUF003",                  # the code base deliberately contains Persian/Arabic text and typographic characters
+  "RUF012", "RUF005", "RUF015",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/reference_restructure.py" = ["C901"]   # frozen copy of the pre-refactor code, kept as the oracle
+"tools/smoke_installed.py" = ["C901"]         # one long script of independent steps, not branching logic
+
+[tool.ruff.lint.mccabe]
+max-complexity = 14   # a function more tangled than this is split
+
+[tool.ruff.lint.isort]
+known-first-party = ["mhbm"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["scripts/mhbm"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = false
+disable_error_code = ["annotation-unchecked"]
+
+[tool.coverage.run]
+source = ["scripts/mhbm"]
+branch = true
+parallel = true
+
+
+[tool.coverage.report]
+fail_under = 88
+show_missing = false
+skip_covered = true
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:", "raise NotImplementedError"]

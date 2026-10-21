@@ -1,0 +1,7 @@
+interface:
+  display_name: "MH Bookmark Organizer"
+  short_description: "Tidy, dedupe, tag and search your bookmarks"
+  default_prompt: "Use $mh-bookmark-organizer to show a health report for my bookmarks export and propose a cleanup plan."
+
+policy:
+  allow_implicit_invocation: true

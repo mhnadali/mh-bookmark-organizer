@@ -1,0 +1,7 @@
+Written by a real Mozilla Firefox 157.0.1 (buildID 20261005135250), headless, in a network namespace with only loopback.
+Source: a synthetic Netscape bookmarks file imported through browser.places.importBookmarksHTML, plus PlacesUtils API calls
+(mobile root, API tags, a keyword with POST data, separators, a place: query).  See tests/real_firefox/.
+places-firefox157.sqlite.gz: VACUUM INTO of the closed profile's places.sqlite (sha256 of the uncompressed file e5231ad5bba820d52231815c0fc32c616594fabd337f529c6a31a606ac514a70).
+bookmarks-firefox157.jsonlz4: the file Firefox wrote to bookmarkbackups/, unmodified.
+expected-firefox157.json: Gecko's own view of the tree, flattened the way mhbm names roots (menu->Bookmarks menu, toolbar->Bookmarks bar,
+unfiled->Other bookmarks, mobile->Mobile bookmarks; place: queries excluded; tags normalised like model.clean_tags).

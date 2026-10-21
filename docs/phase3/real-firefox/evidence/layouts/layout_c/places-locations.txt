@@ -1,0 +1,1 @@
+.mozilla/firefox/egwcvt2m.default-release/places.sqlite

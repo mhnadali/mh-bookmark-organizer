@@ -1,0 +1,15 @@
+{
+  "name": "mh-bookmark-organizer",
+  "version": "1.5.2",
+  "description": "Organize, dedupe, link-check, archive, tag and search browser bookmarks.",
+  "author": { "name": "mhnadali" },
+  "skills": ["./.claude/skills/mh-bookmark-organizer"],
+  "agents": ["./.claude/agents/mh-bookmark-organizer.md"],
+  "mcpServers": {
+    "bookmarks": {
+      "command": "python3",
+      "args": ["-m", "mhbm", "--home", "${CLAUDE_PLUGIN_DATA}/library", "mcp", "--read-only"],
+      "env": { "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/.claude/skills/mh-bookmark-organizer/scripts", "PYTHONDONTWRITEBYTECODE": "1" }
+    }
+  }
+}

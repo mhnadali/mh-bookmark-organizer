@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mh-bookmark-organizer</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header><strong>mh-bookmark-organizer</strong><span id="status" class="mute">connecting…</span></header>
+<section id="save">
+  <div id="page" class="page"></div>
+  <label>Folder <input id="folder" list="folders" autocomplete="off"></label><datalist id="folders"></datalist>
+  <div id="alts" class="chips"></div>
+  <label>Tags <input id="tags" placeholder="comma separated"></label>
+  <button id="saveBtn" class="primary">Save bookmark here</button>
+  <div id="saveMsg" class="mute"></div>
+</section>
+<section>
+  <input id="q" type="search" placeholder="Search your library…"><ul id="results"></ul>
+</section>
+<section>
+  <h2>Organize</h2>
+  <div class="row"><button id="sendBtn">Send my bookmarks to the library</button><button id="planBtn">Suggest moves</button></div>
+  <div id="planMsg" class="mute"></div><ul id="plan"></ul>
+  <button id="applyBtn" class="primary" hidden>Apply suggested moves in the browser</button>
+</section>
+<script type="module" src="popup.js"></script>
+</body></html>

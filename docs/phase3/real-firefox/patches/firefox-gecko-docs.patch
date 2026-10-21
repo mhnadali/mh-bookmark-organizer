@@ -1,0 +1,73 @@
+--- a/README.md	2026-10-15 07:32:10.000000000 +0000
++++ b/README.md	2026-10-15 07:35:39.580849873 +0000
+@@ -139,10 +139,12 @@
+ - The learned model needs roughly 10+ filed bookmarks in 2+ folders; below about 150 it uses a fixed, uncalibrated blend.
+ - Verified: the full suite (about 370 tests) on Linux under Python 3.9, 3.10, 3.11, 3.12 and 3.13, with and without numpy; a real 1,500-bookmark Chrome
+   export (import, dedupe, clean-urls, organize, restructure, undo, HTML export); 50,000 synthetic bookmarks; the extension
+-  and native host end-to-end in headless Chromium; link checking and archiving against a local test server and a proxied sandbox.
++  and native host end-to-end in headless Chromium; Firefox 157, Zen 1.23 and Floorp 12.20 (real Gecko, headless, no network) writing
++  profiles that `import-browser` reads back exactly - `places.sqlite`, `bookmarkbackups/*.jsonlz4`, a killed browser's WAL, a browser that is
++  running - and importing our HTML export (`tests/real_firefox/`, run with `MHBM_FIREFOX_DIR`); link checking and archiving against a local test server and a proxied sandbox.
+ - **Not verified** (be careful, and keep the backups the tool makes): link checks and archiving against many real sites;
+-  macOS and Windows (the CI matrix covers them but had not been run when this was written); real Brave/Edge/Vivaldi/Firefox/Safari
+-  profiles; writing a Chromium `Bookmarks` file into a running real Chrome profile (the checksum and GUID logic follow
++  macOS and Windows (the CI matrix covers them but had not been run when this was written); real Brave/Edge/Vivaldi/Safari
++  profiles, and Firefox on macOS/Windows/Snap/Flatpak and LibreWolf/Waterfox (their folder layouts are from documentation, not from a run); writing a Chromium `Bookmarks` file into a running real Chrome profile (the checksum and GUID logic follow
+   Chromium's documented format and pass `verify-chrome`, but were not compared with a real browser build); real zsh/fish
+   completion; the Arabic, Persian, Spanish, French and German translations are not professionally reviewed.
+ 
+--- a/CHANGELOG.md	2026-10-15 07:32:10.000000000 +0000
++++ b/CHANGELOG.md	2026-10-15 07:35:39.556123206 +0000
+@@ -2,6 +2,29 @@
+ 
+ Versions follow the `mhbm.__version__` string; the browser extension has its own `manifest.json` version, kept in step.
+ 
++## Unreleased
++
++**Firefox and other Gecko browsers, checked against real Gecko** (Firefox 157.0.1, Zen 1.23.2b and Floorp 12.20.1 run headless with no network)
++- **Linux profile location.** Firefox 147+ keeps a fresh profile in `~/.config/mozilla/firefox` (`$XDG_CONFIG_HOME/mozilla/firefox`); only
++  `~/.mozilla/firefox` was searched, so `browsers` and `import-browser firefox` found nothing on a new install. Both are searched now,
++  plus Snap and Flatpak (also the XDG form inside Flatpak).
++- **The right profile.** The first `places.sqlite` in alphabetical order was used, which on a machine with a leftover `xxxx.default` next
++  to the real `xxxx.default-release` is a coin toss. `installs.ini` / the `[Install...]` section of `profiles.ini` now decide (then
++  `Default=1`, the other listed profiles, and unlisted profile folders newest first); `IsRelative=0` paths and names with spaces work.
++- **New:** LibreWolf, Waterfox, Floorp and Zen (`import-browser zen`, ...); `--profile` accepts a profile folder, a renamed database, or a
++  Firefox `.json` backup. A database that is not SQLite or is damaged is a normal error, not a traceback.
++- **A running Firefox.** The database and its `-wal` are copied while Firefox may checkpoint in between; a copy of the old database with the
++  new WAL is a malformed database (or silently misses recent bookmarks). The copy is verified (database mtime/size and the 32-byte WAL
++  header before and after), retried, and refused with a clear message if the browser never settles. The `-shm` is no longer copied.
++- **Backups agree with the database.** A `bookmarks-*.jsonlz4` / JSON backup named the Other Bookmarks root `unfiled` (so importing the same
++  profile from both sources duplicated those bookmarks) and imported `place:` saved queries as bookmarks.
++- **Smaller fixes:** a temp folder whose path contains `#`, `%` or `?` broke the database open; a millisecond `ADD_DATE` that Firefox stored
++  times 10^6 gave a date in the year 52000; the LZ4 decoder checked the output size only after copying a match (a 5 MB file of `0xFF`
++  claimed over a gigabyte) and is now checked first and about twice as fast; the HTML export marks `Other bookmarks` so Firefox files it in
++  its own Other Bookmarks root instead of a sub-folder of the menu.
++- **Tests.** Fixtures written by real Firefox 157 (`tests/fixtures/firefox/`), layouts of real Firefox/Zen/Floorp profile folders, a deterministic
++  db/WAL race, and `tests/test_real_firefox.py`, which drives a real browser when `MHBM_FIREFOX_DIR` names one (skipped otherwise).
++
+ ## 1.5.2
+ 
+ **Hotfix: the MCP server could not start** (found by the Phase 3 audit, which launched the real command; the audit is in `docs/phase3/mcp-audit.md`)
+--- a/SKILL.md	2026-10-14 19:54:42.000000000 +0000
++++ b/SKILL.md	2026-10-15 07:35:39.581171595 +0000
+@@ -41,7 +41,7 @@
+ 
+ | # | Step | Commands |
+ |---|------|----------|
+-| 1 | Import | `import FILE...` (auto-detects HTML, Chrome/Firefox JSON, CSV, JSON, Pocket, Raindrop, Instapaper, Omnivore, Karakeep, Linkwarden), `browsers`, `import-browser chrome\|brave\|edge\|vivaldi\|opera\|chromium\|firefox\|safari`. Re-importing a fresh export is safe: a bookmark already present in the same folder is skipped (`--skip-existing` also skips other folders, `--allow-duplicates` imports everything) |
++| 1 | Import | `import FILE...` (auto-detects HTML, Chrome/Firefox JSON, CSV, JSON, Pocket, Raindrop, Instapaper, Omnivore, Karakeep, Linkwarden), `browsers`, `import-browser chrome\|brave\|edge\|vivaldi\|opera\|chromium\|firefox\|librewolf\|waterfox\|floorp\|zen\|safari`. Re-importing a fresh export is safe: a bookmark already present in the same folder is skipped (`--skip-existing` also skips other folders, `--allow-duplicates` imports everything) |
+ | 2 | Assess | `stats` (unfiled, duplicates, link status, empty folders, top domains/tags) |
+ | 3 | Clean URLs | `clean-urls [--apply]` removes **only** tracking parameters |
+ | 4 | Dedupe | `dedupe [--level exact\|variant] [--same-folder-only] [--fuzzy] [--interactive] [--plan-out F] [--apply]`. Copies filed in different folders are merged and the keeper gets a note `also filed in: ...`; `--fuzzy` lists look-alikes (same page + referral parameter, same title and address, near-identical text) for you to decide |
+--- a/TROUBLESHOOTING.md	2026-10-14 20:41:23.000000000 +0000
++++ b/TROUBLESHOOTING.md	2026-10-15 07:35:39.581039278 +0000
+@@ -34,6 +34,9 @@
+ | Import from a browser fails | Close the browser (profile files are locked on Windows) or use `import-browser NAME --profile "Profile 1"`. `mhbm browsers` lists what was found. Safari needs Full Disk Access for the terminal on macOS. |
+ | Chrome ignores the exported HTML | In Chrome use **Bookmarks > Import bookmarks and settings > Bookmarks HTML file**. It adds an "Imported" folder; delete the old folders afterwards. |
+ | `install-chrome` / `sync` refuses to run | The browser must be completely closed and you must pass `--confirm-chrome-closed`. If Chrome Sync is on, it can overwrite local edits: prefer the HTML import route. Run `verify-chrome FILE` first. |
++| `import-browser firefox` finds nothing, or reads the wrong profile | Firefox 147+ on Linux keeps profiles in `~/.config/mozilla/firefox` (older ones, and any home that already had `~/.mozilla`, in `~/.mozilla/firefox`). `mhbm browsers` lists every profile, the one the installation really uses first (`installs.ini`). Pick another with `--profile PATH` (a profile folder, `places.sqlite` or a `bookmarks-*.jsonlz4`). LibreWolf, Waterfox, Floorp and Zen are read the same way. |
++| "places.sqlite kept changing while it was copied" | The browser was writing its bookmarks at that very moment. Run the command again, or close the browser. (Firefox keeps the database locked, so mhbm works on a consistent copy of it and its `-wal` file.) |
++| "not a readable Firefox places.sqlite" | The file is not a Firefox database or is damaged; use the newest file in the profile's `bookmarkbackups/` instead. |
+ | Firefox backup (`.jsonlz4`) is "corrupt" | The file is truncated or is not a bookmarks backup. Use a copy from `bookmarkbackups/` in the profile, or export HTML from Firefox. |
+ 
+ ## Link checking and archiving

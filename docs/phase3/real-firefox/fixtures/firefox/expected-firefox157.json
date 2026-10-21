@@ -1,0 +1,262 @@
+{
+ "bookmarks": [
+  {
+   "added": 1600000001,
+   "folder": "Bookmarks menu/Menu folder one",
+   "tags": [
+    "alpha",
+    "beta"
+   ],
+   "title": "Menu item A",
+   "url": "https://menu1.example.org/a"
+  },
+  {
+   "added": 1600000003,
+   "folder": "Bookmarks menu/Menu folder one",
+   "tags": [
+    "gamma-delta",
+    "شهر"
+   ],
+   "title": "Menu item B with & entity <b>",
+   "url": "https://menu1.example.org/b"
+  },
+  {
+   "added": 1600000005,
+   "folder": "Bookmarks menu/Menu folder one",
+   "tags": [],
+   "title": "padded   title",
+   "url": "https://menu1.example.org/c"
+  },
+  {
+   "added": 1600000010,
+   "folder": "Bookmarks menu",
+   "tags": [],
+   "title": "Loose menu bookmark",
+   "url": "https://menu.example.org/loose"
+  },
+  {
+   "added": 1600000020,
+   "folder": "Bookmarks menu/پوشهٔ فارسی",
+   "tags": [
+    "persian",
+    "فارسی"
+   ],
+   "title": "عنوان فارسی ۱۲۳ بین‌المللی",
+   "url": "https://fa.example.org/%D8%B5%D9%81%D8%AD%D9%87"
+  },
+  {
+   "added": 1600000021,
+   "folder": "Bookmarks menu/پوشهٔ فارسی",
+   "tags": [],
+   "title": "IDN host",
+   "url": "https://xn--mgbh0fb.example/%D8%B5%D9%81%D8%AD%D9%87"
+  },
+  {
+   "added": 1600000030,
+   "folder": "Bookmarks menu/Q&A ∕ FAQ",
+   "tags": [],
+   "title": "Inside a folder whose name has a slash",
+   "url": "https://slash.example.org/1"
+  },
+  {
+   "added": 1600000040,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Bookmarklet",
+   "url": "javascript:void(document.title='x')"
+  },
+  {
+   "added": 1600000041,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Data URL",
+   "url": "data:text/html,<h1>hi</h1>"
+  },
+  {
+   "added": 1600000042,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "about:config",
+   "url": "about:config"
+  },
+  {
+   "added": 1600000043,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Local file",
+   "url": "file:///tmp/example/notes.txt"
+  },
+  {
+   "added": 1600000044,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Mail link",
+   "url": "mailto:someone@example.org"
+  },
+  {
+   "added": 1600000046,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Very long URL",
+   "url": "https://long.example.org/segment0/segment1/segment2/segment3/segment4/segment5/segment6/segment7/segment8/segment9/segment10/segment11/segment12/segment13/segment14/segment15/segment16/segment17/segment18/segment19/segment20/segment21/segment22/segment23/segment24/segment25/segment26/segment27/segment28/segment29/segment30/segment31/segment32/segment33/segment34/segment35/segment36/segment37/segment38/segment39/segment40/segment41/segment42/segment43/segment44/segment45/segment46/segment47/segment48/segment49/segment50/segment51/segment52/segment53/segment54/segment55/segment56/segment57/segment58/segment59/segment60/segment61/segment62/segment63/segment64/segment65/segment66/segment67/segment68/segment69/segment70/segment71/segment72/segment73/segment74/segment75/segment76/segment77/segment78/segment79/segment80/segment81/segment82/segment83/segment84/segment85/segment86/segment87/segment88/segment89/segment90/segment91/segment92/segment93/segment94/segment95/segment96/segment97/segment98/segment99/segment100/segment101/segment102/segment103/segment104/segment105/segment106/segment107/segment108/segment109/segment110/segment111/segment112/segment113/segment114/segment115/segment116/segment117/segment118/segment119/segment120/segment121/segment122/segment123/segment124/segment125/segment126/segment127/segment128/segment129/segment130/segment131/segment132/segment133/segment134/segment135/segment136/segment137/segment138/segment139/segment140/segment141/segment142/segment143/segment144/segment145/segment146/segment147/segment148/segment149/segment150/segment151/segment152/segment153/segment154/segment155/segment156/segment157/segment158/segment159/segment160/segment161/segment162/segment163/segment164/segment165/segment166/segment167/segment168/segment169/segment170/segment171/segment172/segment173/segment174/segment175/segment176/segment177/segment178/segment179/segment180/segment181/segment182/segment183/segment184/segment185/segment186/segment187/segment188/segment189/segment190/segment191/segment192/segment193/segment194/segment195/segment196/segment197/segment198/segment199/segment200/segment201/segment202/segment203/segment204/segment205/segment206/segment207/segment208/segment209/segment210/segment211/segment212/segment213/segment214/segment215/segment216/segment217/segment218/segment219/segment220/segment221/segment222/segment223/segment224/segment225/segment226/segment227/segment228/segment229/segment230/segment231/segment232/segment233/segment234/segment235/segment236/segment237/segment238/segment239/segment240/segment241/segment242/segment243/segment244/segment245/segment246/segment247/segment248/segment249/segment250/segment251/segment252/segment253/segment254/segment255/segment256/segment257/segment258/segment259/segment260/segment261/segment262/segment263/segment264/segment265/segment266/segment267/segment268/segment269/segment270/segment271/segment272/segment273/segment274/segment275/segment276/segment277/segment278/segment279/segment280/segment281/segment282/segment283/segment284/segment285/segment286/segment287/segment288/segment289/segment290/segment291/segment292/segment293/segment294/segment295/segment296/segment297/segment298/segment299?q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "added": 1600000047,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Fragment",
+   "url": "https://example.org/#frag"
+  },
+  {
+   "added": 1600000048,
+   "folder": "Bookmarks menu/Odd schemes",
+   "tags": [],
+   "title": "Same URL, folder one",
+   "url": "https://example.org/dup"
+  },
+  {
+   "added": 0,
+   "folder": "Bookmarks menu/Dates",
+   "tags": [],
+   "title": "ADD_DATE zero",
+   "url": "https://dates.example.org/zero"
+  },
+  {
+   "added": 835000000,
+   "folder": "Bookmarks menu/Dates",
+   "tags": [],
+   "title": "ADD_DATE 1996",
+   "url": "https://dates.example.org/old"
+  },
+  {
+   "added": 7258118400,
+   "folder": "Bookmarks menu/Dates",
+   "tags": [],
+   "title": "ADD_DATE 2200",
+   "url": "https://dates.example.org/future"
+  },
+  {
+   "added": 1600000000,
+   "folder": "Bookmarks menu/Dates",
+   "tags": [],
+   "title": "ADD_DATE in milliseconds",
+   "url": "https://dates.example.org/ms"
+  },
+  {
+   "added": 1500000123,
+   "folder": "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11/Level 12",
+   "tags": [],
+   "title": "Bottom of a 12-level tree",
+   "url": "https://deep.example.org/bottom"
+  },
+  {
+   "added": 1600000100,
+   "folder": "Bookmarks bar",
+   "tags": [
+    "toolbar-tag"
+   ],
+   "title": "Toolbar one",
+   "url": "https://toolbar.example.org/one"
+  },
+  {
+   "added": 1600000101,
+   "folder": "Bookmarks bar",
+   "tags": [],
+   "title": "Same URL, toolbar copy",
+   "url": "https://example.org/dup"
+  },
+  {
+   "added": 1600000102,
+   "folder": "Bookmarks bar/Toolbar sub",
+   "tags": [
+    "x"
+   ],
+   "title": "Toolbar sub item",
+   "url": "https://toolbar.example.org/sub"
+  },
+  {
+   "added": 1600000103,
+   "folder": "Bookmarks bar/Toolbar sub",
+   "tags": [],
+   "title": "After two separators",
+   "url": "https://toolbar.example.org/sub2"
+  },
+  {
+   "added": 1792047167,
+   "folder": "Bookmarks bar",
+   "tags": [],
+   "title": "Search with POST",
+   "url": "https://api.example.org/search?q=%s"
+  },
+  {
+   "added": 1600000200,
+   "folder": "Other bookmarks",
+   "tags": [],
+   "title": "Unfiled one",
+   "url": "https://unfiled.example.org/one"
+  },
+  {
+   "added": 1600000201,
+   "folder": "Other bookmarks/Folder with trailing space ",
+   "tags": [
+    "mixed-case",
+    "upper"
+   ],
+   "title": "Unfiled two",
+   "url": "https://unfiled.example.org/two"
+  },
+  {
+   "added": 1792047167,
+   "folder": "Other bookmarks",
+   "tags": [
+    "api-tag",
+    "zeta",
+    "تگب"
+   ],
+   "title": "API tagged",
+   "url": "https://api.example.org/tagged"
+  },
+  {
+   "added": 1792047167,
+   "folder": "Mobile bookmarks",
+   "tags": [],
+   "title": "Mobile one",
+   "url": "https://mobile.example.org/1"
+  },
+  {
+   "added": 1792047167,
+   "folder": "Mobile bookmarks/Mobile folder",
+   "tags": [],
+   "title": "In mobile folder",
+   "url": "https://mobile.example.org/2"
+  }
+ ],
+ "folders": [
+  "Bookmarks bar",
+  "Bookmarks bar/Toolbar sub",
+  "Bookmarks menu",
+  "Bookmarks menu/Dates",
+  "Bookmarks menu/Deep tree",
+  "Bookmarks menu/Deep tree/Level 1",
+  "Bookmarks menu/Deep tree/Level 1/Level 2",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11",
+  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11/Level 12",
+  "Bookmarks menu/Menu folder one",
+  "Bookmarks menu/Odd schemes",
+  "Bookmarks menu/Q&A ∕ FAQ",
+  "Bookmarks menu/پوشهٔ فارسی",
+  "Mobile bookmarks",
+  "Mobile bookmarks/Mobile folder",
+  "Other bookmarks",
+  "Other bookmarks/Empty folder",
+  "Other bookmarks/Folder with trailing space "
+ ]
+}

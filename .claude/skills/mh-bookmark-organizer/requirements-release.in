@@ -1,0 +1,10 @@
+# Tools the release workflow installs, by exact version and file hash (requirements-release.txt is generated from this file):
+#   uv pip compile --generate-hashes --python-version 3.13 --no-header requirements-release.in -o requirements-release.txt
+# Dependabot proposes updates to the .txt; the library itself needs none of them (standard library only).
+setuptools
+wheel
+build
+twine
+check-wheel-contents
+validate-pyproject
+readme-renderer[md]

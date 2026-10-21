@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bookmarks": {
+      "command": "python3",
+      "args": [
+        "codex_mcp.py"
+      ],
+      "cwd": "./scripts"
+    }
+  }
+}

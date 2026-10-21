@@ -1,0 +1,26 @@
+{
+ "start": 2.8,
+ "import_done": 2.8,
+ "bulk": {
+  "inserted": 49554,
+  "folders": 500,
+  "tagged": 835
+ },
+ "bulk_seconds": 16.5,
+ "backup": {
+  "create": "undefined",
+  "json": "50110",
+  "html": "ok"
+ },
+ "exit": 0,
+ "elapsed": 29.8,
+ "files": {
+  ".parentlock": 0,
+  "lock": 15,
+  "places.sqlite": 26214400,
+  "places.sqlite-wal": 0
+ },
+ "backups": [
+  "bookmarks-2026-10-15_50110_3ZWnSFqrJWL6Z3gahKRLaNfiY1TG80-KPFtaIipICl4=.jsonlz4"
+ ]
+}

@@ -1,0 +1,13 @@
+FF-01  ok   profile under ~/.config/mozilla/firefox is found (Firefox >= 147 default on Linux)   [found 1]
+FF-02  ok   import-browser firefox reads the profile the installation really uses
+FF-03  ok   jsonlz4 backup names the Other bookmarks root like the sqlite reader   [0 bookmarks under 'unfiled/']
+FF-04  ok   jsonlz4 backup skips place: queries like the sqlite reader   [0 place: URLs imported]
+FF-05  ok   --profile accepts a profile folder
+FF-06  ok   unreadable places.sqlite gives a clean FormatError
+FF-07  ok   works when the temp dir path contains # or %
+FF-08  ok   copy of a live db+WAL is consistent across a checkpoint   [rows=3600, integrity_check='ok']
+FF-09  ok   LZ4 match-length bomb refused before copying (60 KB of 0xFF)   [took 0.00s; 5 MB of 0xFF would claim ~1.3 GB]
+FF-10  ok   to_unix undoes ms-as-seconds x 10**6 (1.6e18)   [got 1600000000]
+FF-11  ok   Zen and Floorp profiles are detected   [detected ['floorp', 'zen']]
+FF-12  ok   a Firefox .json backup given to import-browser is read as Firefox JSON
+FF-13  ok   HTML export marks 'Other bookmarks' UNFILED_BOOKMARKS_FOLDER (Firefox import)

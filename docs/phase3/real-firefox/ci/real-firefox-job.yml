@@ -1,0 +1,41 @@
+# Proposed addition to .github/workflows/test.yml (under `jobs:`).  Uses only the action SHAs already pinned there, so
+# tests/test_repo_hygiene.py (pinned SHAs + version comment, one persist-credentials:false per checkout) keeps passing.
+# `defaults.run.working-directory` of the workflow already points at .claude/skills/mh-bookmark-organizer.
+#
+# The pin below was produced with:  python3 tests/real_firefox/pin_firefox.py            (stdlib only; reads conda-forge current_repodata)
+# and the file was downloaded + sha256-checked + unpacked + RUN in the Claude sandbox (see REPORT.md).
+# To bump: run pin_firefox.py, replace FIREFOX_PKG / FIREFOX_SHA256, regenerate the fixtures if the major version changed
+# (tests/real_firefox/README.md), run the job.
+  real-firefox:
+    name: real Firefox 157 (headless Gecko writes, mhbm reads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # conda-forge repack of Mozilla's official Linux build (distribution.ini: mozilla-official; Mozilla's .sig files inside)
+      FIREFOX_PKG: firefox-157.0.1-hee9eb32_0.conda
+      FIREFOX_SHA256: f1b53de244dc14b0a0d2d848aa41d7cf0edb95992cd477dccac40ff4d7127f35   # 107,857,602 bytes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Fetch the pinned Firefox, verify its sha256, unpack
+        run: |
+          python -m pip install zstandard==0.25.0     # only this helper needs it; mhbm stays standard-library only
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$FIREFOX_PKG" "https://conda.anaconda.org/conda-forge/linux-64/$FIREFOX_PKG"
+          python -I tests/real_firefox/extract_conda.py "$RUNNER_TEMP/$FIREFOX_PKG" "$FIREFOX_SHA256" "$RUNNER_TEMP/firefox"
+          MOZ_HEADLESS=1 "$RUNNER_TEMP/firefox/bin/FirefoxApp/firefox" --version
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/firefox/bin/FirefoxApp
+      - name: Tests that drive the real browser (warnings and leaked resources are errors, like the main job)
+        run: python -W error::DeprecationWarning -W error::ResourceWarning -m unittest discover -s tests -p "test_real_firefox.py" -v
+        env:
+          MHBM_FIREFOX_DIR: ${{ runner.temp }}/firefox/bin/FirefoxApp
+          MHBM_NO_NETNS: "1"   # hosted runners cannot `unshare -n` unprivileged; the profile prefs + a dead proxy keep the browser off the network
+      # Optional second leg for the forks (GitHub release assets, sha256 verified here in the sandbox):
+      #   Zen 1.23.2b   https://github.com/zen-browser/desktop/releases/download/1.23.2b/zen.linux-x86_64.tar.xz
+      #                 sha256 5e67f4fa081b1b437243c464449ea1bd2a3b15b6f932487a8aa0c25aa8514600   -> MHBM_FIREFOX_DIR=<x>/zen MHBM_GECKO_EXE=zen
+      #   Floorp 12.20.1 https://github.com/Floorp-Projects/Floorp/releases/download/v12.20.1/floorp-linux-x86_64.tar.xz
+      #                 sha256 9edbf80d4ced1f29b1910048d75b8f23f3905576e11b859f22b38001042060b0   -> MHBM_FIREFOX_DIR=<x>/floorp MHBM_GECKO_EXE=floorp

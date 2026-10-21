@@ -1,0 +1,47 @@
+{
+  "name": "mh-bookmark-organizer",
+  "displayName": "MH Bookmark Organizer",
+  "version": "1.5.2",
+  "description": "Organize, dedupe, link-check, archive, tag and search browser bookmarks: a skill, a subagent and an MCP server over a local engine that needs nothing but Python 3.9+.",
+  "author": {
+    "name": "mhnadali"
+  },
+  "homepage": "https://github.com/mhnadali/mh-bookmark-organizer",
+  "repository": "https://github.com/mhnadali/mh-bookmark-organizer",
+  "keywords": [
+    "bookmarks",
+    "chrome",
+    "firefox",
+    "dedupe",
+    "link-checker",
+    "archive",
+    "mcp"
+  ],
+  "defaultEnabled": false,
+  "userConfig": {
+    "python": {
+      "type": "string",
+      "title": "Python command",
+      "description": "The command that starts Python 3.9 or newer: python3 on macOS and Linux, py or python on Windows.",
+      "default": "python3"
+    },
+    "library_dir": {
+      "type": "directory",
+      "title": "Library folder",
+      "description": "Where your bookmark library is kept (a private SQLite database with your tags, notes, snapshots and undo history). Choose a folder you back up; it is not removed when the plugin is uninstalled.",
+      "required": true
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only MCP server",
+      "description": "Offer only the tools that cannot change the library. Turn this off to let Claude propose and apply changes (you still approve each one, and every apply can be undone).",
+      "default": false
+    },
+    "no_network": {
+      "type": "boolean",
+      "title": "No network tools",
+      "description": "Hide the tools that contact the bookmarked sites (link checking, page archiving).",
+      "default": false
+    }
+  }
+}

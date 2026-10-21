@@ -1,0 +1,48 @@
+{
+ "phase_A": {
+  "files": {
+   ".parentlock": 0,
+   "lock": 16,
+   "places.sqlite": 5242880,
+   "places.sqlite-wal": 2459432
+  },
+  "lock_target": "127.0.0.1:+19007",
+  "direct_ro": "OperationalError: database is locked",
+  "direct_immutable": "opened; bookmarks=416",
+  "direct_ro_user_version": "OperationalError: database is locked",
+  "mhbm_load_live": "367 bookmarks in 47 ms"
+ },
+ "phase_B": [
+  {
+   "variant": "baseline",
+   "copies": 120,
+   "ok": 120,
+   "bad": 0,
+   "details": {},
+   "copy_stats": {
+    "copies": 120,
+    "changed": 67,
+    "wal_reset": 47,
+    "db_changed": 39
+   }
+  },
+  {
+   "variant": "shipped",
+   "copies": 120,
+   "ok": 107,
+   "bad": 0,
+   "details": {},
+   "refused": 13,
+   "copy_stats": null
+  }
+ ],
+ "writer": {
+  "inserted": 938,
+  "ckpts": 106,
+  "errors": [
+   "ckpt Error: Error(s) encountered during statement execution: database table is locked",
+   "ckpt Error: Error(s) encountered during statement execution: database table is locked",
+   "ckpt Error: Error(s) encountered during statement execution: database table is locked"
+  ]
+ }
+}

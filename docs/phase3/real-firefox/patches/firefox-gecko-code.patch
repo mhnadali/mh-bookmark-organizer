@@ -1,0 +1,2402 @@
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/scripts/mhbm/browsers.py b/scripts/mhbm/browsers.py
+--- a/scripts/mhbm/browsers.py	2026-10-14 17:40:25.000000000 +0000
++++ b/scripts/mhbm/browsers.py	2026-10-15 07:35:22.047380528 +0000
+@@ -8,13 +8,15 @@
+ import shutil
+ import sqlite3
+ import tempfile
++import time
+ from pathlib import Path
+ 
+-from . import formats
++from . import formats, gecko
+ from .model import Bookmark, esc_name
+ 
+ CHROMIUM = ("chrome", "chromium", "brave", "edge", "vivaldi", "opera")
+-ALL = CHROMIUM + ("firefox", "safari")
++GECKO = gecko.NAMES  # firefox, librewolf, waterfox, floorp, zen: same places.sqlite / jsonlz4 formats, found through profiles.ini
++ALL = CHROMIUM + GECKO + ("safari",)
+ 
+ 
+ def _bases(name: str) -> list:
+@@ -26,8 +28,6 @@
+             "chrome": [home / ".config/google-chrome"], "chromium": [home / ".config/chromium", home / "snap/chromium/common/chromium"],
+             "brave": [home / ".config/BraveSoftware/Brave-Browser"], "edge": [home / ".config/microsoft-edge"],
+             "vivaldi": [home / ".config/vivaldi"], "opera": [home / ".config/opera"],
+-            "firefox": [home / ".mozilla/firefox", home / "snap/firefox/common/.mozilla/firefox",
+-                        home / ".var/app/org.mozilla.firefox/.mozilla/firefox"],
+         },
+         "Darwin": {
+             "chrome": [home / "Library/Application Support/Google/Chrome"],
+@@ -36,21 +36,22 @@
+             "edge": [home / "Library/Application Support/Microsoft Edge"],
+             "vivaldi": [home / "Library/Application Support/Vivaldi"],
+             "opera": [home / "Library/Application Support/com.operasoftware.Opera"],
+-            "firefox": [home / "Library/Application Support/Firefox/Profiles"],
+             "safari": [home / "Library/Safari"],
+         },
+         "Windows": {
+             "chrome": [local / "Google/Chrome/User Data"], "chromium": [local / "Chromium/User Data"],
+             "brave": [local / "BraveSoftware/Brave-Browser/User Data"], "edge": [local / "Microsoft/Edge/User Data"],
+             "vivaldi": [local / "Vivaldi/User Data"], "opera": [roam / "Opera Software/Opera Stable"],
+-            "firefox": [roam / "Mozilla/Firefox/Profiles"],
+         },
+     }
+     return table.get(system, {}).get(name, [])
+ 
+ 
+ def find_profiles(name: str) -> list:
+-    """Paths of bookmark stores for ``name``: Chromium ``Bookmarks`` files, Firefox ``places.sqlite``, Safari plist."""
++    """Paths of bookmark stores for ``name``: Chromium ``Bookmarks`` files, Gecko ``places.sqlite`` (the profile the browser
++    really uses first, see ``gecko``) and newest ``bookmarkbackups`` file, Safari plist."""
++    if name in GECKO:
++        return gecko.files(name)
+     found = []
+     for base in _bases(name):
+         if not base.exists():
+@@ -59,19 +60,14 @@
+             if (base / "Bookmarks").is_file():
+                 found.append(base / "Bookmarks")
+             found += [p / "Bookmarks" for p in sorted(base.glob("*")) if (p / "Bookmarks").is_file()]
+-        elif name == "firefox":
+-            found += sorted(base.glob("*/places.sqlite")) + sorted(base.glob("*.default*/places.sqlite"))
+-            for prof in sorted(base.glob("*/bookmarkbackups")):  # newest automatic backup of each profile
+-                backups = sorted(prof.glob("bookmarks-*.jsonlz4"))
+-                if backups:
+-                    found.append(backups[-1])
+         elif name == "safari" and (base / "Bookmarks.plist").is_file():
+             found.append(base / "Bookmarks.plist")
+     return list(dict.fromkeys(found))
+ 
+ 
+ def detect() -> dict:
+-    return {n: [str(p) for p in find_profiles(n)] for n in ALL if find_profiles(n)}
++    found = {n: [str(p) for p in find_profiles(n)] for n in ALL}
++    return {n: paths for n, paths in found.items() if paths}
+ 
+ 
+ MOZLZ4_MAGIC = b"mozLz40\0"
+@@ -116,11 +112,14 @@
+                 if b != 255:
+                     break
+         match += 4
+-        start = len(out) - offset
+-        for k in range(match):  # byte by byte: matches may overlap their own output
+-            out.append(out[start + k])
+-        if len(out) > size + 65536:
++        if len(out) + match > size + 65536:  # refuse BEFORE copying: a few KiB of 0xFF length bytes can claim gigabytes
+             raise formats.FormatError("corrupt LZ4 data (output too large)")
++        start = len(out) - offset
++        if offset >= match:
++            out += out[start:start + match]
++        else:  # the match overlaps its own output: it repeats the last `offset` bytes
++            pattern = bytes(out[start:])
++            out += pattern * (match // offset) + pattern[:match % offset]
+     return bytes(out[:size]) if size else bytes(out)
+ 
+ 
+@@ -134,25 +133,55 @@
+     return lz4_block_decompress(raw[12:], size)
+ 
+ 
+-def _copy(path: Path) -> Path:
+-    tmp = Path(tempfile.mkdtemp(prefix="mhbm-"))
+-    dest = tmp / path.name
+-    shutil.copy2(path, dest)
+-    for ext in ("-wal", "-shm"):  # include uncheckpointed Firefox writes
+-        side = path.with_name(path.name + ext)
+-        if side.exists():
+-            shutil.copy2(side, tmp / side.name)
+-    return dest
++def _fingerprint(path: Path):
++    """What changes when a running browser checkpoints or restarts its WAL: the db's mtime/size and the 32-byte WAL header
++    (salts + checkpoint sequence).  Plain appends to the WAL do not change it and are harmless to a copy."""
++    st = path.stat()
++    try:
++        with open(path.with_name(path.name + "-wal"), "rb") as f:
++            head = f.read(32)
++    except FileNotFoundError:
++        head = b""
++    return st.st_mtime_ns, st.st_size, head
++
++
++def _copy(path: Path, attempts: int = 6) -> Path:
++    """Copy ``path`` and its ``-wal`` (uncheckpointed writes of a running Firefox) into a private temp dir.
++
++    Firefox keeps places.sqlite open in exclusive WAL mode, so the files cannot be opened in place; but a db copied *before* and
++    a WAL copied *after* a checkpoint do not belong together (SQLite then reports missing index rows, or silently drops the
++    newest bookmarks).  Copy, then re-check the fingerprint; retry if the browser moved in between, refuse if it keeps moving.
++    The ``-shm`` is never copied: SQLite rebuilds the wal-index from the WAL."""
++    path = Path(path)
++    for attempt in range(attempts):
++        tmp = Path(tempfile.mkdtemp(prefix="mhbm-"))
++        before = _fingerprint(path)
++        dest = tmp / path.name
++        shutil.copy2(path, dest)
++        wal = path.with_name(path.name + "-wal")
++        if wal.exists():
++            try:
++                shutil.copy2(wal, tmp / wal.name)
++            except FileNotFoundError:  # the browser removed it (clean shutdown) between exists() and the copy
++                pass
++        if _fingerprint(path) == before:
++            return dest
++        shutil.rmtree(tmp, ignore_errors=True)
++        time.sleep(0.05 * (attempt + 1))
++    raise formats.FormatError(f"{path.name} kept changing while it was copied: the browser is busy writing it. "
++                              "Retry in a moment, or close the browser first.")
+ 
+ 
+ def parse_places(db_path: Path) -> formats.ParsedList:
+     """Firefox ``places.sqlite``: folders, tags and bookmarks."""
+-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
++    conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)  # as_uri() quotes '#', '?', '%' in the path
+     conn.row_factory = sqlite3.Row
+     try:
+         rows = conn.execute(
+             "SELECT b.id, b.parent, b.type, b.title, b.dateAdded, b.guid, b.fk, p.url "
+             "FROM moz_bookmarks b LEFT JOIN moz_places p ON p.id = b.fk").fetchall()
++    except sqlite3.DatabaseError as e:  # not a database, truncated, a different app's file: say so instead of a traceback
++        raise formats.FormatError(f"{Path(db_path).name}: not a readable Firefox places.sqlite ({e})") from e
+     finally:
+         conn.close()
+     nodes = {r["id"]: r for r in rows}
+@@ -215,8 +244,38 @@
+     return formats._with_folders(items, folders)
+ 
+ 
++def _source_in(folder: Path) -> Path:
++    """A profile *folder* (what the browser's profile manager / about:support shows) -> the file in it that holds the bookmarks."""
++    for name in ("places.sqlite", "Bookmarks", "Bookmarks.plist"):
++        if (folder / name).is_file():
++            return folder / name
++    backups = sorted((folder / "bookmarkbackups").glob(gecko.BACKUP_GLOB))
++    if backups:
++        return backups[-1]
++    raise formats.FormatError(f"{folder}: no places.sqlite, Bookmarks, Bookmarks.plist or bookmarkbackups here; pass the file itself")
++
++
++def _is_sqlite(path: Path) -> bool:
++    with open(path, "rb") as f:
++        return f.read(16) == b"SQLite format 3\x00"
++
++
++def _parse(copy: Path) -> formats.ParsedList:
++    if copy.suffix == ".jsonlz4":
++        return formats.parse_firefox(json.loads(read_mozlz4(copy).decode("utf-8")))
++    if copy.suffix == ".sqlite" or copy.name == "places.sqlite" or _is_sqlite(copy):
++        return parse_places(copy)
++    if copy.suffix == ".plist":
++        return parse_safari(plistlib.loads(copy.read_bytes()))
++    if copy.suffix == ".json":  # Firefox's own JSON backup or export, Chrome-style JSON: let the sniffer decide
++        return formats.read_file(copy)
++    return formats.parse_chrome(json.loads(copy.read_text(encoding="utf-8")))
++
++
+ def load(name_or_path: str, profile: str | None = None) -> formats.ParsedList:
+-    """Read ``chrome|brave|edge|vivaldi|opera|chromium|firefox|safari`` (first profile unless ``profile``), or a file path."""
++    """Read ``chrome|brave|edge|vivaldi|opera|chromium|firefox|librewolf|waterfox|floorp|zen|safari`` (the first profile, which
++    for Gecko browsers is the one the installation really uses, unless ``profile``), or a file path.  ``profile`` may also be a
++    profile folder."""
+     path = Path(profile) if profile else None
+     key = name_or_path.lower()
+     if path is None:
+@@ -227,16 +286,12 @@
+             path = found[0]
+         else:
+             path = Path(name_or_path)
++    if path.is_dir():
++        path = _source_in(path)
+     if not path.is_file():
+         raise formats.FormatError(f"{path} is not a file")
+     copy = _copy(path)
+     try:
+-        if copy.suffix == ".jsonlz4":
+-            return formats.parse_firefox(json.loads(read_mozlz4(copy).decode("utf-8")))
+-        if copy.name == "places.sqlite" or (key == "firefox" and copy.suffix == ".sqlite"):
+-            return parse_places(copy)
+-        if copy.suffix == ".plist":
+-            return parse_safari(plistlib.loads(copy.read_bytes()))
+-        return formats.parse_chrome(json.loads(copy.read_text(encoding="utf-8")))
++        return _parse(copy)
+     finally:
+         shutil.rmtree(copy.parent, ignore_errors=True)
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/scripts/mhbm/commands/data_io.py b/scripts/mhbm/commands/data_io.py
+--- a/scripts/mhbm/commands/data_io.py	2026-10-14 17:31:44.000000000 +0000
++++ b/scripts/mhbm/commands/data_io.py	2026-10-15 07:35:22.136577482 +0000
+@@ -245,8 +245,8 @@
+     sp.add_argument("--show-skipped", action="store_true", help="list the bookmarks that were skipped")
+ 
+     sp = add("import-browser", cmd_import_browser, "read bookmarks directly from an installed browser")
+-    sp.add_argument("name", help=f"{', '.join(browsers.ALL)} or a profile file path")
+-    sp.add_argument("--profile", help="explicit Bookmarks/places.sqlite/Bookmarks.plist path")
++    sp.add_argument("name", help=f"{', '.join(browsers.ALL)} or a profile file/folder path")
++    sp.add_argument("--profile", help="explicit Bookmarks/places.sqlite/Bookmarks.plist/bookmarks-*.jsonlz4 file, or a profile folder")
+     sp.add_argument("--skip-existing", action="store_true")
+     sp.add_argument("--allow-duplicates", action="store_true")
+     sp.add_argument("--show-skipped", action="store_true")
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/scripts/mhbm/formats.py b/scripts/mhbm/formats.py
+--- a/scripts/mhbm/formats.py	2026-10-14 19:50:09.000000000 +0000
++++ b/scripts/mhbm/formats.py	2026-10-15 07:35:22.108896282 +0000
+@@ -25,6 +25,7 @@
+ READ_FORMATS = ("html", "chrome", "firefox", "csv", "json")
+ WRITE_FORMATS = ("html", "chrome", "csv", "json", "md", "obsidian", "raindrop", "pocket", "linkwarden", "karakeep", "instapaper")
+ TOOLBAR = "Bookmarks bar"
++OTHER = "Other bookmarks"
+ 
+ 
+ class FormatError(ValueError):
+@@ -73,6 +74,8 @@
+                 return 0
+         value = float(v)
+     n = int(value)
++    if n > 10**17:  # Firefox imported a milliseconds ADD_DATE as if it were seconds and stored it x 10**6
++        return n // 10**9
+     if n > 10**16:  # webkit microseconds
+         return n // 10**6 - WEBKIT_EPOCH_OFFSET
+     if n > 10**14:  # unix microseconds (Firefox)
+@@ -285,6 +288,8 @@
+                 attrs += f' LAST_MODIFIED="{dates[1]}"'
+             if depth == 1 and name == TOOLBAR:
+                 attrs += ' PERSONAL_TOOLBAR_FOLDER="true"'
++            elif depth == 1 and name == OTHER:  # Firefox files this folder under its own "Other Bookmarks" root; Chrome ignores the attribute
++                attrs += ' UNFILED_BOOKMARKS_FOLDER="true"'
+             out.append(f"{pad}<DT><H3{attrs}>{html.escape(unesc_name(name))}</H3>")
+             out.append(f"{pad}<DL><p>")
+             emit(node["_dirs"][name], depth + 1, path)
+@@ -467,11 +472,12 @@
+ def parse_firefox(data: dict) -> ParsedList:
+     items: list = []
+     folders: set = set()
+-    names = {"toolbar": "Bookmarks bar", "unfiled": "Other bookmarks", "mobile": "Mobile bookmarks",
+-             "bookmarksmenu": "Bookmarks menu"}
++    # keys are the `root` field minus "Folder", lower-cased: toolbarFolder, unfiledBookmarksFolder (!), mobileFolder, bookmarksMenuFolder
++    names = {"toolbar": "Bookmarks bar", "unfiled": "Other bookmarks", "unfiledbookmarks": "Other bookmarks",
++             "mobile": "Mobile bookmarks", "bookmarksmenu": "Bookmarks menu"}
+ 
+     def walk(node, path):
+-        if node.get("uri") and node.get("typeCode", 1) == 1:
++        if node.get("uri") and node.get("typeCode", 1) == 1 and not node["uri"].startswith("place:"):  # place: = a saved query, not a page
+             items.append(Bookmark(url=node["uri"], title=node.get("title", ""), folder="/".join(path),
+                                   tags=node.get("tags", ""), added=to_unix(node.get("dateAdded"))))
+         for child in node.get("children", []):
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/scripts/mhbm/gecko.py b/scripts/mhbm/gecko.py
+--- a/scripts/mhbm/gecko.py	1970-01-01 00:00:00.000000000 +0000
++++ b/scripts/mhbm/gecko.py	2026-10-15 07:35:22.073261025 +0000
+@@ -0,0 +1,112 @@
++"""Find the profiles of Gecko browsers (Firefox, LibreWolf, Waterfox, Floorp, Zen) the way the browser itself does.
++
++A *root* is the directory that holds ``profiles.ini`` (and ``installs.ini``).  Where it lives depends on the browser, the OS,
++how it was installed and, since Firefox 147, on whether ``~/.mozilla`` already existed: a fresh Linux install now keeps its
++profiles under ``$XDG_CONFIG_HOME/mozilla/firefox`` (``~/.config/mozilla/firefox``).
++
++Which profile is *the* profile: the ``[Install<hash>]`` section (mirrored in ``installs.ini``) names the profile this
++installation really uses.  ``Default=1`` in a ``[ProfileN]`` section is a legacy marker and, on a modern install, often points at
++an unused ``xxxx.default`` profile, so it ranks below the install default.
++"""
++from __future__ import annotations
++
++import configparser
++import os
++import platform
++from pathlib import Path
++
++NAMES = ("firefox", "librewolf", "waterfox", "floorp", "zen")
++PLACES = "places.sqlite"
++BACKUP_GLOB = "bookmarks-*.jsonlz4"
++
++
++def roots(name: str) -> list:
++    """Candidate directories holding ``profiles.ini`` for ``name``, in the order the browser would prefer them."""
++    home, system = Path.home(), platform.system()
++    xdg_env = os.environ.get("XDG_CONFIG_HOME", "")
++    xdg = Path(xdg_env) if xdg_env and Path(xdg_env).is_absolute() else home / ".config"
++    roam = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
++    flat = home / ".var/app"
++    table = {
++        "Linux": {
++            # ~/.mozilla/firefox wins when it exists (Firefox >= 147 only uses the XDG path on a fresh home)
++            "firefox": [home / ".mozilla/firefox", xdg / "mozilla/firefox", home / "snap/firefox/common/.mozilla/firefox",
++                        flat / "org.mozilla.firefox/.mozilla/firefox", flat / "org.mozilla.firefox/config/mozilla/firefox"],
++            "librewolf": [home / ".librewolf", xdg / "librewolf", flat / "io.gitlab.librewolf-community/.librewolf"],
++            "waterfox": [home / ".waterfox", xdg / "waterfox", flat / "net.waterfox.waterfox/.waterfox"],
++            "floorp": [xdg / "floorp", home / ".floorp", flat / "one.ablaze.floorp/.floorp"],
++            "zen": [xdg / "zen", home / ".zen", flat / "app.zen_browser.zen/.zen"],
++        },
++        "Darwin": {n: [home / "Library/Application Support" / d] for n, d in
++                   (("firefox", "Firefox"), ("librewolf", "LibreWolf"), ("waterfox", "Waterfox"), ("floorp", "Floorp"), ("zen", "zen"))},
++        "Windows": {"firefox": [roam / "Mozilla/Firefox"], "librewolf": [roam / "librewolf"], "waterfox": [roam / "Waterfox"],
++                    "floorp": [roam / "Floorp"], "zen": [roam / "zen"]},
++    }
++    return table.get(system, {}).get(name, [])
++
++
++def _ini(path: Path):
++    cp = configparser.RawConfigParser(strict=False, interpolation=None)
++    try:
++        cp.read(path, encoding="utf-8")
++    except (OSError, UnicodeError, configparser.Error):
++        return None
++    return cp
++
++
++def _join(root: Path, value: str, relative: bool = True) -> Path:
++    value = value.strip()
++    p = Path(value)
++    return p if (not relative or p.is_absolute()) else root / value
++
++
++def _listed(root: Path) -> tuple:
++    """(install defaults, ``Default=1`` profiles, the other profiles) named by installs.ini / profiles.ini, as paths."""
++    installs: list = []
++    default: list = []
++    others: list = []
++    for fname in ("installs.ini", "profiles.ini"):
++        cp = _ini(root / fname)
++        if cp is None:
++            continue
++        for sec in cp.sections():
++            if fname == "installs.ini" or sec.lower().startswith("install"):
++                if cp.get(sec, "default", fallback="").strip():
++                    installs.append(_join(root, cp.get(sec, "default")))
++            elif sec.lower().startswith("profile") and cp.get(sec, "path", fallback="").strip():
++                path = _join(root, cp.get(sec, "path"), cp.get(sec, "isrelative", fallback="1").strip() != "0")
++                (default if cp.get(sec, "default", fallback="0").strip() == "1" else others).append(path)
++    return installs, default, others
++
++
++def _mtime(path: Path) -> float:
++    try:
++        return path.stat().st_mtime
++    except OSError:
++        return 0.0
++
++
++def profile_dirs(root: Path) -> list:
++    """Profile directories under ``root``, most likely the user's one first: the install default(s), the legacy ``Default=1``
++    profile, the other listed profiles, then unlisted directories that hold a ``places.sqlite`` (selectable profiles,
++    profiles whose ``profiles.ini`` entry was lost), most recently used first."""
++    installs, default, others = _listed(root)
++    stray = sorted({p.parent for pat in (f"*/{PLACES}", f"Profiles/*/{PLACES}") for p in root.glob(pat)},
++                   key=lambda d: _mtime(d / PLACES), reverse=True)
++    return list(dict.fromkeys(installs + default + others + stray))
++
++
++def files(name: str) -> list:
++    """``places.sqlite`` of every profile (default first), then the newest ``bookmarkbackups`` file of every profile."""
++    dbs: list = []
++    backups: list = []
++    for root in roots(name):
++        if not root.is_dir():
++            continue
++        for prof in profile_dirs(root):
++            if (prof / PLACES).is_file():
++                dbs.append(prof / PLACES)
++            newest = sorted((prof / "bookmarkbackups").glob(BACKUP_GLOB))
++            if newest:
++                backups.append(newest[-1])
++    return list(dict.fromkeys(dbs + backups))
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/scripts/mhbm/mcp_server.py b/scripts/mhbm/mcp_server.py
+--- a/scripts/mhbm/mcp_server.py	2026-10-15 07:31:23.000000000 +0000
++++ b/scripts/mhbm/mcp_server.py	2026-10-15 07:35:39.555920371 +0000
+@@ -17,11 +17,11 @@
+ import sys
+ from pathlib import Path
+ 
+-from . import __version__, cli
++from . import __version__, browsers, cli
+ 
+ PROTOCOL = "2025-06-18"
+ 
+-BROWSER_NAMES = ("chrome", "chromium", "brave", "edge", "vivaldi", "opera", "firefox", "safari")   # a name, never a file path
++BROWSER_NAMES = tuple(browsers.ALL)   # a name, never a file path; one list for the CLI and MCP (Gecko forks included)
+ 
+ _APPLY = {"apply": {"type": "boolean", "description": "Write changes. Omit for a dry-run preview."}}
+ 
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/fixtures/firefox/PROVENANCE.txt b/tests/fixtures/firefox/PROVENANCE.txt
+--- a/tests/fixtures/firefox/PROVENANCE.txt	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/fixtures/firefox/PROVENANCE.txt	2026-10-15 07:35:22.188338587 +0000
+@@ -0,0 +1,7 @@
++Written by a real Mozilla Firefox 157.0.1 (buildID 20261005135250), headless, in a network namespace with only loopback.
++Source: a synthetic Netscape bookmarks file imported through browser.places.importBookmarksHTML, plus PlacesUtils API calls
++(mobile root, API tags, a keyword with POST data, separators, a place: query).  See tests/real_firefox/.
++places-firefox157.sqlite.gz: VACUUM INTO of the closed profile's places.sqlite (sha256 of the uncompressed file e5231ad5bba820d52231815c0fc32c616594fabd337f529c6a31a606ac514a70).
++bookmarks-firefox157.jsonlz4: the file Firefox wrote to bookmarkbackups/, unmodified.
++expected-firefox157.json: Gecko's own view of the tree, flattened the way mhbm names roots (menu->Bookmarks menu, toolbar->Bookmarks bar,
++unfiled->Other bookmarks, mobile->Mobile bookmarks; place: queries excluded; tags normalised like model.clean_tags).
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/fixtures/firefox/expected-firefox157.json b/tests/fixtures/firefox/expected-firefox157.json
+--- a/tests/fixtures/firefox/expected-firefox157.json	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/fixtures/firefox/expected-firefox157.json	2026-10-15 07:35:22.175753204 +0000
+@@ -0,0 +1,262 @@
++{
++ "bookmarks": [
++  {
++   "added": 1600000001,
++   "folder": "Bookmarks menu/Menu folder one",
++   "tags": [
++    "alpha",
++    "beta"
++   ],
++   "title": "Menu item A",
++   "url": "https://menu1.example.org/a"
++  },
++  {
++   "added": 1600000003,
++   "folder": "Bookmarks menu/Menu folder one",
++   "tags": [
++    "gamma-delta",
++    "شهر"
++   ],
++   "title": "Menu item B with & entity <b>",
++   "url": "https://menu1.example.org/b"
++  },
++  {
++   "added": 1600000005,
++   "folder": "Bookmarks menu/Menu folder one",
++   "tags": [],
++   "title": "padded   title",
++   "url": "https://menu1.example.org/c"
++  },
++  {
++   "added": 1600000010,
++   "folder": "Bookmarks menu",
++   "tags": [],
++   "title": "Loose menu bookmark",
++   "url": "https://menu.example.org/loose"
++  },
++  {
++   "added": 1600000020,
++   "folder": "Bookmarks menu/پوشهٔ فارسی",
++   "tags": [
++    "persian",
++    "فارسی"
++   ],
++   "title": "عنوان فارسی ۱۲۳ بین‌المللی",
++   "url": "https://fa.example.org/%D8%B5%D9%81%D8%AD%D9%87"
++  },
++  {
++   "added": 1600000021,
++   "folder": "Bookmarks menu/پوشهٔ فارسی",
++   "tags": [],
++   "title": "IDN host",
++   "url": "https://xn--mgbh0fb.example/%D8%B5%D9%81%D8%AD%D9%87"
++  },
++  {
++   "added": 1600000030,
++   "folder": "Bookmarks menu/Q&A ∕ FAQ",
++   "tags": [],
++   "title": "Inside a folder whose name has a slash",
++   "url": "https://slash.example.org/1"
++  },
++  {
++   "added": 1600000040,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Bookmarklet",
++   "url": "javascript:void(document.title='x')"
++  },
++  {
++   "added": 1600000041,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Data URL",
++   "url": "data:text/html,<h1>hi</h1>"
++  },
++  {
++   "added": 1600000042,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "about:config",
++   "url": "about:config"
++  },
++  {
++   "added": 1600000043,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Local file",
++   "url": "file:///tmp/example/notes.txt"
++  },
++  {
++   "added": 1600000044,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Mail link",
++   "url": "mailto:someone@example.org"
++  },
++  {
++   "added": 1600000046,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Very long URL",
++   "url": "https://long.example.org/segment0/segment1/segment2/segment3/segment4/segment5/segment6/segment7/segment8/segment9/segment10/segment11/segment12/segment13/segment14/segment15/segment16/segment17/segment18/segment19/segment20/segment21/segment22/segment23/segment24/segment25/segment26/segment27/segment28/segment29/segment30/segment31/segment32/segment33/segment34/segment35/segment36/segment37/segment38/segment39/segment40/segment41/segment42/segment43/segment44/segment45/segment46/segment47/segment48/segment49/segment50/segment51/segment52/segment53/segment54/segment55/segment56/segment57/segment58/segment59/segment60/segment61/segment62/segment63/segment64/segment65/segment66/segment67/segment68/segment69/segment70/segment71/segment72/segment73/segment74/segment75/segment76/segment77/segment78/segment79/segment80/segment81/segment82/segment83/segment84/segment85/segment86/segment87/segment88/segment89/segment90/segment91/segment92/segment93/segment94/segment95/segment96/segment97/segment98/segment99/segment100/segment101/segment102/segment103/segment104/segment105/segment106/segment107/segment108/segment109/segment110/segment111/segment112/segment113/segment114/segment115/segment116/segment117/segment118/segment119/segment120/segment121/segment122/segment123/segment124/segment125/segment126/segment127/segment128/segment129/segment130/segment131/segment132/segment133/segment134/segment135/segment136/segment137/segment138/segment139/segment140/segment141/segment142/segment143/segment144/segment145/segment146/segment147/segment148/segment149/segment150/segment151/segment152/segment153/segment154/segment155/segment156/segment157/segment158/segment159/segment160/segment161/segment162/segment163/segment164/segment165/segment166/segment167/segment168/segment169/segment170/segment171/segment172/segment173/segment174/segment175/segment176/segment177/segment178/segment179/segment180/segment181/segment182/segment183/segment184/segment185/segment186/segment187/segment188/segment189/segment190/segment191/segment192/segment193/segment194/segment195/segment196/segment197/segment198/segment199/segment200/segment201/segment202/segment203/segment204/segment205/segment206/segment207/segment208/segment209/segment210/segment211/segment212/segment213/segment214/segment215/segment216/segment217/segment218/segment219/segment220/segment221/segment222/segment223/segment224/segment225/segment226/segment227/segment228/segment229/segment230/segment231/segment232/segment233/segment234/segment235/segment236/segment237/segment238/segment239/segment240/segment241/segment242/segment243/segment244/segment245/segment246/segment247/segment248/segment249/segment250/segment251/segment252/segment253/segment254/segment255/segment256/segment257/segment258/segment259/segment260/segment261/segment262/segment263/segment264/segment265/segment266/segment267/segment268/segment269/segment270/segment271/segment272/segment273/segment274/segment275/segment276/segment277/segment278/segment279/segment280/segment281/segment282/segment283/segment284/segment285/segment286/segment287/segment288/segment289/segment290/segment291/segment292/segment293/segment294/segment295/segment296/segment297/segment298/segment299?q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
++  },
++  {
++   "added": 1600000047,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Fragment",
++   "url": "https://example.org/#frag"
++  },
++  {
++   "added": 1600000048,
++   "folder": "Bookmarks menu/Odd schemes",
++   "tags": [],
++   "title": "Same URL, folder one",
++   "url": "https://example.org/dup"
++  },
++  {
++   "added": 0,
++   "folder": "Bookmarks menu/Dates",
++   "tags": [],
++   "title": "ADD_DATE zero",
++   "url": "https://dates.example.org/zero"
++  },
++  {
++   "added": 835000000,
++   "folder": "Bookmarks menu/Dates",
++   "tags": [],
++   "title": "ADD_DATE 1996",
++   "url": "https://dates.example.org/old"
++  },
++  {
++   "added": 7258118400,
++   "folder": "Bookmarks menu/Dates",
++   "tags": [],
++   "title": "ADD_DATE 2200",
++   "url": "https://dates.example.org/future"
++  },
++  {
++   "added": 1600000000,
++   "folder": "Bookmarks menu/Dates",
++   "tags": [],
++   "title": "ADD_DATE in milliseconds",
++   "url": "https://dates.example.org/ms"
++  },
++  {
++   "added": 1500000123,
++   "folder": "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11/Level 12",
++   "tags": [],
++   "title": "Bottom of a 12-level tree",
++   "url": "https://deep.example.org/bottom"
++  },
++  {
++   "added": 1600000100,
++   "folder": "Bookmarks bar",
++   "tags": [
++    "toolbar-tag"
++   ],
++   "title": "Toolbar one",
++   "url": "https://toolbar.example.org/one"
++  },
++  {
++   "added": 1600000101,
++   "folder": "Bookmarks bar",
++   "tags": [],
++   "title": "Same URL, toolbar copy",
++   "url": "https://example.org/dup"
++  },
++  {
++   "added": 1600000102,
++   "folder": "Bookmarks bar/Toolbar sub",
++   "tags": [
++    "x"
++   ],
++   "title": "Toolbar sub item",
++   "url": "https://toolbar.example.org/sub"
++  },
++  {
++   "added": 1600000103,
++   "folder": "Bookmarks bar/Toolbar sub",
++   "tags": [],
++   "title": "After two separators",
++   "url": "https://toolbar.example.org/sub2"
++  },
++  {
++   "added": 1792047167,
++   "folder": "Bookmarks bar",
++   "tags": [],
++   "title": "Search with POST",
++   "url": "https://api.example.org/search?q=%s"
++  },
++  {
++   "added": 1600000200,
++   "folder": "Other bookmarks",
++   "tags": [],
++   "title": "Unfiled one",
++   "url": "https://unfiled.example.org/one"
++  },
++  {
++   "added": 1600000201,
++   "folder": "Other bookmarks/Folder with trailing space ",
++   "tags": [
++    "mixed-case",
++    "upper"
++   ],
++   "title": "Unfiled two",
++   "url": "https://unfiled.example.org/two"
++  },
++  {
++   "added": 1792047167,
++   "folder": "Other bookmarks",
++   "tags": [
++    "api-tag",
++    "zeta",
++    "تگب"
++   ],
++   "title": "API tagged",
++   "url": "https://api.example.org/tagged"
++  },
++  {
++   "added": 1792047167,
++   "folder": "Mobile bookmarks",
++   "tags": [],
++   "title": "Mobile one",
++   "url": "https://mobile.example.org/1"
++  },
++  {
++   "added": 1792047167,
++   "folder": "Mobile bookmarks/Mobile folder",
++   "tags": [],
++   "title": "In mobile folder",
++   "url": "https://mobile.example.org/2"
++  }
++ ],
++ "folders": [
++  "Bookmarks bar",
++  "Bookmarks bar/Toolbar sub",
++  "Bookmarks menu",
++  "Bookmarks menu/Dates",
++  "Bookmarks menu/Deep tree",
++  "Bookmarks menu/Deep tree/Level 1",
++  "Bookmarks menu/Deep tree/Level 1/Level 2",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11",
++  "Bookmarks menu/Deep tree/Level 1/Level 2/Level 3/Level 4/Level 5/Level 6/Level 7/Level 8/Level 9/Level 10/Level 11/Level 12",
++  "Bookmarks menu/Menu folder one",
++  "Bookmarks menu/Odd schemes",
++  "Bookmarks menu/Q&A ∕ FAQ",
++  "Bookmarks menu/پوشهٔ فارسی",
++  "Mobile bookmarks",
++  "Mobile bookmarks/Mobile folder",
++  "Other bookmarks",
++  "Other bookmarks/Empty folder",
++  "Other bookmarks/Folder with trailing space "
++ ]
++}
+\ No newline at end of file
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/README.md b/tests/real_firefox/README.md
+--- a/tests/real_firefox/README.md	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/README.md	2026-10-15 07:35:22.229183638 +0000
+@@ -0,0 +1,19 @@
++# Real-Gecko harness
++
++Drives a **real** headless Firefox (or Zen, Floorp, ... any Gecko build) to write profiles that `mhbm` then reads.
++Everything is standard library; nothing runs unless `MHBM_FIREFOX_DIR` points at a directory containing the `firefox`
++executable (an extracted Mozilla Linux tarball, or the `bin/FirefoxApp` directory of the conda-forge `firefox` package).
++`MHBM_GECKO_EXE` names the executable when it is not `firefox` (e.g. `zen`, `floorp`).
++
++| script | what it does |
++| --- | --- |
++| `build_profile.py <profile> <source.html> [--extras] [--bulk N] [--end clean\|kill\|term]` | Firefox imports a Netscape file through `browser.places.importBookmarksHTML`, optional extras go in through `PlacesUtils`, then it quits cleanly or is killed (WAL left behind). Writes `<profile>.truth.json` (Gecko's own tree), a JSON backup and an HTML export. |
++| `live_test.py <profile> <work> --probe` | Firefox keeps running on a copy of the profile while mhbm reads it; checks the result equals Gecko's truth. Without `--probe` a stress test makes Firefox commit and checkpoint continuously. |
++| `discover_layout.py <fresh-home>` | Starts Firefox with no `-profile` and prints where it put `profiles.ini`, `installs.ini` and the profile. |
++| `compare.py <profile>` | Diffs what mhbm reads (places.sqlite, jsonlz4, JSON backup, HTML export) with the truth. |
++| `make_fixture.py <profile> <out>` | Turns a profile into the small committed fixtures under `tests/fixtures/firefox/`. |
++| `make_netscape.py <outdir>` | The synthetic source files (`rich.html`, `messy.html`). |
++| `netns_exec.py` | Used with `unshare -n`: brings up loopback only, so the browser cannot reach the network. |
++
++The browser is started with `HOME` pointing at a scratch directory, telemetry/update/Remote Settings disabled and no route to the network.
++Regenerate the fixtures after a Firefox major release: `build_profile.py p rich.html --extras --end clean` then `make_fixture.py p ../fixtures/firefox`.
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/build_profile.py b/tests/real_firefox/build_profile.py
+--- a/tests/real_firefox/build_profile.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/build_profile.py	2026-10-15 07:35:22.239563402 +0000
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++"""Have REAL Gecko write a Firefox profile (places.sqlite + bookmarkbackups/*.jsonlz4) from a synthetic Netscape file.
++
++usage: MHBM_FIREFOX_DIR=<dir with `firefox`> python3 -I build_profile.py <out-profile-dir> <source.html>
++           [--extras] [--end clean|kill|term] [--no-backup] [--workdir DIR]
++
++  --extras   after the HTML import, add things HTML cannot express through Gecko's own PlacesUtils API
++             (mobile root bookmark, API tags, keyword with POST data, separator, livemark attempt, smart-bookmark annotation)
++  --end      clean = Marionette:Quit(eAttemptQuit) so Firefox checkpoints the WAL and releases the lock;
++             kill  = SIGKILL right after the writes (WAL not checkpointed, lock file left behind);
++             term  = SIGTERM (Firefox's nsProfileLock handler removes `lock` and re-raises: still no checkpoint)
++
++Writes next to the profile:  <out>.truth.json  (the bookmark tree exactly as Gecko reports it: PlacesUtils.promiseBookmarksTree
++plus tags/keywords), <out>.export.html (Firefox's own HTML export), <out>.backup.json (plain JSON backup).
++The whole thing runs in a loopback-only network namespace (re-exec through `unshare -n`).
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import shutil
++import sys
++import time
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import ffenv
++import marionette
++
++EXTRAS_JS = r"""
++const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++const log = {};
++const B = PlacesUtils.bookmarks;
++async function step(name, fn) { try { log[name] = (await fn()) ?? "ok"; } catch (e) { log[name] = "ERROR " + e; } }
++await step("mobile", async () => (await B.insert({parentGuid: B.mobileGuid, url: "https://mobile.example.org/1", title: "Mobile one"})).guid);
++await step("mobile_folder", async () => {
++  const f = await B.insert({parentGuid: B.mobileGuid, type: B.TYPE_FOLDER, title: "Mobile folder"});
++  await B.insert({parentGuid: f.guid, url: "https://mobile.example.org/2", title: "In mobile folder"});
++  return f.guid;
++});
++await step("api_tags", async () => {
++  await B.insert({parentGuid: B.unfiledGuid, url: "https://api.example.org/tagged", title: "API tagged"});
++  PlacesUtils.tagging.tagURI(Services.io.newURI("https://api.example.org/tagged"), ["api-tag", "Zeta", "تگب"]);
++});
++await step("keyword_post", async () => {
++  await B.insert({parentGuid: B.toolbarGuid, url: "https://api.example.org/search?q=%s", title: "Search with POST"});
++  await PlacesUtils.keywords.insert({keyword: "kwpost", url: "https://api.example.org/search?q=%s", postData: "q=%s"});
++});
++await step("separator", async () => (await B.insert({parentGuid: B.toolbarGuid, type: B.TYPE_SEPARATOR})).guid);
++await step("smart_query", async () => {
++  const q = await B.insert({parentGuid: B.menuGuid, url: "place:parent=" + B.toolbarGuid + "&queryType=1", title: "Query on toolbar"});
++  return q.guid;
++});
++await step("livemark", async () => {
++  if (!PlacesUtils.livemarks) return "PlacesUtils.livemarks is gone in this build";
++  const l = await PlacesUtils.livemarks.addLivemark({title: "A feed", parentGuid: B.menuGuid,
++      feedURI: Services.io.newURI("https://feeds.example.org/rss.xml"), siteURI: Services.io.newURI("https://feeds.example.org/")});
++  return l.guid;
++});
++return log;
++"""
++
++BULK_JS = r"""
++const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++const N = arguments[0];
++const B = PlacesUtils.bookmarks;
++let seed = 12345;
++const rnd = () => { seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0; return seed / 4294967296; };
++const words = ["garden","comet","dovetail","gambit","sourdough","gearing","aperture","mainsail","kiln","warbler","kernel","ledger","باغ","ستاره","نان","شطرنج"];
++const pick = a => a[Math.floor(rnd() * a.length)];
++const folders = [];
++for (let i = 0; i < Math.max(10, N / 100); i++) {
++  const kids = [];
++  const per = 60 + Math.floor(rnd() * 80);
++  for (let j = 0; j < per && folders.length * 100 + kids.length < N; j++) {
++    kids.push({url: `https://${pick(words).replace(/[^a-z]/g, "x")}${i % 97}.example.org/${i}/${j}?id=${Math.floor(rnd() * 1e6)}`,
++               title: `${pick(words)} ${pick(words)} ${pick(words)} ${j}`, dateAdded: new Date((1500000000 + Math.floor(rnd() * 1.2e8)) * 1000)});
++  }
++  folders.push({type: B.TYPE_FOLDER, title: `${pick(words)} ${i}`, children: kids});
++  if (folders.reduce((n, f) => n + f.children.length, 0) >= N) break;
++}
++let total = 0;
++for (let i = 0; i < folders.length; i += 50) {
++  const batch = folders.slice(i, i + 50);
++  await B.insertTree({guid: B.toolbarGuid, children: batch});
++  total += batch.reduce((n, f) => n + f.children.length, 0);
++}
++// tag ~3% of them
++let tagged = 0;
++for (let i = 0; i < folders.length; i += 3) {
++  for (const c of folders[i].children.slice(0, 5)) { PlacesUtils.tagging.tagURI(Services.io.newURI(c.url), ["bulk", pick(words)]); tagged++; }
++}
++return {inserted: total, folders: folders.length, tagged};
++"""
++
++DUMP_JS = r"""
++const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++const tree = await PlacesUtils.promiseBookmarksTree("", {includeItemIds: true});
++const kw = [];
++await PlacesUtils.withConnectionWrapper("truth", async db => {
++  const rows = await db.execute("SELECT keyword, h.url, post_data FROM moz_keywords k JOIN moz_places h ON h.id = k.place_id");
++  for (const r of rows) kw.push([r.getResultByName("keyword"), r.getResultByName("url"), r.getResultByName("post_data")]);
++});
++const tags = [];
++await PlacesUtils.withConnectionWrapper("truth2", async db => {
++  const rows = await db.execute("SELECT t.title, h.url FROM moz_bookmarks b JOIN moz_bookmarks t ON t.id = b.parent JOIN moz_places h ON h.id = b.fk WHERE t.parent = (SELECT id FROM moz_bookmarks WHERE guid = 'tags________') ORDER BY t.title, h.url");
++  for (const r of rows) tags.push([r.getResultByName("title"), r.getResultByName("url")]);
++});
++return {tree, keywords: kw, tag_rows: tags, version: Services.appinfo.version, buildID: Services.appinfo.appBuildID};
++"""
++
++BACKUP_JS = r"""
++const { PlacesBackups } = ChromeUtils.importESModule("resource://gre/modules/PlacesBackups.sys.mjs");
++const { BookmarkHTMLUtils } = ChromeUtils.importESModule("resource://gre/modules/BookmarkHTMLUtils.sys.mjs");
++const jsonPath = arguments[0], htmlPath = arguments[1];
++const out = {};
++out.create = String(await PlacesBackups.create());
++out.json = (await PlacesBackups.saveBookmarksToJSONFile(jsonPath)) + "";
++await BookmarkHTMLUtils.exportToFile(htmlPath);
++out.html = "ok";
++return out;
++"""
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("profile")
++    ap.add_argument("html")
++    ap.add_argument("--extras", action="store_true")
++    ap.add_argument("--end", choices=("clean", "kill", "term"), default="clean")
++    ap.add_argument("--no-backup", action="store_true")
++    ap.add_argument("--bulk", type=int, default=0, help="also insert N synthetic bookmarks (deterministic) through Gecko's insertTree")
++    ap.add_argument("--workdir")
++    args = ap.parse_args()
++    ffenv.ensure_netns()
++
++    prof = Path(args.profile).resolve()
++    shutil.rmtree(prof, ignore_errors=True)
++    home = Path(args.workdir or str(prof) + ".home")
++    shutil.rmtree(home, ignore_errors=True)
++    ffenv.write_user_js(prof, {"browser.places.importBookmarksHTML": True, "browser.bookmarks.file": str(Path(args.html).resolve()),
++                               "browser.bookmarks.restore_default_bookmarks": False})
++    t0 = time.time()
++    proc = ffenv.launch(prof, home, log=Path(str(prof) + ".log"), netns=False, extra_args=["-marionette", "--remote-allow-system-access"])
++    report: dict = {"start": None}
++    try:
++        m = marionette.Marionette()
++        m.connect(90)
++        m.new_session()
++        m.chrome()
++        report["start"] = round(time.time() - t0, 1)
++        # wait until the HTML import has finished (the pref flips back to false once nsBrowserGlue is done)
++        for _ in range(200):
++            done = m.run("return !Services.prefs.getBoolPref('browser.places.importBookmarksHTML', false);")
++            if done:
++                break
++            time.sleep(0.25)
++        report["import_done"] = round(time.time() - t0, 1)
++        if args.extras:
++            report["extras"] = m.run(EXTRAS_JS)
++        if args.bulk:
++            t_b = time.time()
++            report["bulk"] = m.run(BULK_JS, [args.bulk])
++            report["bulk_seconds"] = round(time.time() - t_b, 1)
++        truth = m.run(DUMP_JS)
++        Path(str(prof) + ".truth.json").write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
++        if not args.no_backup:
++            report["backup"] = m.run(BACKUP_JS, [str(prof) + ".backup.json", str(prof) + ".export.html"])
++        if args.end == "clean":
++            m.quit(("eAttemptQuit",))
++            try:
++                proc.wait(60)
++                report["exit"] = proc.returncode
++            except Exception:
++                report["exit"] = "timeout"
++        else:
++            import signal
++            ffenv.kill_group(proc, signal.SIGKILL if args.end == "kill" else signal.SIGTERM)
++            report["exit"] = proc.returncode
++    finally:
++        ffenv.kill_group(proc)
++    report["elapsed"] = round(time.time() - t0, 1)
++    report["files"] = {f: os.lstat(prof / f).st_size for f in sorted(os.listdir(prof)) if f.startswith(("places", "lock", ".parentlock"))}
++    report["backups"] = sorted(os.listdir(prof / "bookmarkbackups")) if (prof / "bookmarkbackups").is_dir() else []
++    print(json.dumps(report, ensure_ascii=False, indent=1))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/compare.py b/tests/real_firefox/compare.py
+--- a/tests/real_firefox/compare.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/compare.py	2026-10-15 07:35:22.217349551 +0000
+@@ -0,0 +1,135 @@
++#!/usr/bin/env python3
++"""Compare what mhbm reads from a Gecko-written profile with what Gecko itself says is in it (<profile>.truth.json).
++
++usage: MHBM_SCRIPTS=<skill>/scripts python3 -I compare.py <profile-dir> [--sources sqlite,jsonlz4,json,html] [--mhbm-dir DIR]
++Prints a compact diff per source; exit status 1 if any source differs from the truth.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import sys
++from collections import Counter
++from pathlib import Path
++
++ROOT_NAMES = {"menu________": "Bookmarks menu", "toolbar_____": "Bookmarks bar", "unfiled_____": "Other bookmarks",
++              "mobile______": "Mobile bookmarks"}
++
++
++def esc(name: str) -> str:
++    return name.replace("/", "∕") if name.strip() else ""
++
++
++def _clean_tags(tags):
++    """mhbm's own tag normalisation (lower-case, spaces -> '-', drop empties); imported lazily so the module imports without mhbm."""
++    sys.dont_write_bytecode = True
++    sys.path.insert(0, os.environ.get("MHBM_SCRIPTS", ""))  # -I ignores PYTHONPATH on purpose
++    from mhbm import model
++    return model.clean_tags(tags)
++
++
++def truth_items(truth: dict, include_place_queries: bool) -> list:
++    """Flatten Gecko's own tree to (folder, url, title, tags, added_s)."""
++    out = []
++
++    def walk(node, path):
++        t = node.get("type")
++        if t == "text/x-moz-place":
++            url = node.get("uri", "")
++            if url.startswith("place:") and not include_place_queries:
++                return
++            tags = sorted(_clean_tags((node.get("tags") or "").split(",")))
++            added = int(node.get("dateAdded") or 0) // 1_000_000
++            if added > 10**11:  # a milliseconds ADD_DATE that Firefox multiplied by 10**6 again: mhbm undoes it (to_unix, > 10**17)
++                added //= 1000
++            out.append(("/".join(path), url, node.get("title", ""), tuple(tags), added))
++        elif t == "text/x-moz-place-container":
++            guid = node.get("guid")
++            name = ROOT_NAMES.get(guid) or node.get("title") or ""
++            sub = path + [esc(name)] if name and guid != "root________" else path
++            for c in node.get("children", []):
++                walk(c, sub)
++
++    walk(truth["tree"], [])
++    return out
++
++
++def truth_folders(truth: dict) -> set:
++    out = set()
++
++    def walk(node, path):
++        if node.get("type") == "text/x-moz-place-container":
++            guid = node.get("guid")
++            name = ROOT_NAMES.get(guid) or node.get("title") or ""
++            sub = path + [esc(name)] if name and guid != "root________" else path
++            if sub and guid != "root________":
++                out.add("/".join(sub))
++            for c in node.get("children", []):
++                walk(c, sub)
++
++    walk(truth["tree"], [])
++    return out
++
++
++def mhbm_items(parsed) -> list:
++    return [(b.folder, b.url, b.title, tuple(sorted(b.tags)), b.added) for b in parsed]
++
++
++def diff(name, got, want, folders_got, folders_want, limit=8) -> bool:
++    cg, cw = Counter(got), Counter(want)
++    missing, extra = cw - cg, cg - cw
++    print(f"--- {name}: read {len(got)} bookmarks, truth {len(want)}; missing {sum(missing.values())}, unexpected {sum(extra.values())}")
++    for label, c in (("MISSING (in Gecko, not read)", missing), ("UNEXPECTED (read, not in Gecko)", extra)):
++        for row in list(c)[:limit]:
++            print(f"    {label}: {tuple(str(x)[:70] for x in row)}")
++    fm, fx = sorted(folders_want - folders_got), sorted(folders_got - folders_want)
++    if fm or fx:
++        print(f"    folders missing {len(fm)}: {[x[:60] for x in fm[:limit]]}")
++        print(f"    folders unexpected {len(fx)}: {[x[:60] for x in fx[:limit]]}")
++    return not (missing or extra or fm or fx)
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("profile")
++    ap.add_argument("--sources", default="sqlite,jsonlz4,json,html")
++    ap.add_argument("--place-queries", action="store_true", help="expect place: URLs (saved queries) to be imported too (default: skipped)")
++    args = ap.parse_args()
++    sys.dont_write_bytecode = True
++    sys.path.insert(0, os.environ.get("MHBM_SCRIPTS", ""))  # -I ignores PYTHONPATH on purpose
++    from mhbm import browsers, formats
++
++    prof = Path(args.profile)
++    truth = json.loads(Path(str(prof) + ".truth.json").read_text(encoding="utf-8"))
++    ok = True
++    for src in args.sources.split(","):
++        try:
++            if src == "sqlite":
++                parsed = browsers.load("firefox", profile=str(prof / "places.sqlite"))
++            elif src == "jsonlz4":
++                backups = sorted((prof / "bookmarkbackups").glob("bookmarks-*.jsonlz4"))
++                parsed = browsers.load("firefox", profile=str(backups[-1]))
++            elif src == "json":
++                parsed = formats.read_file(str(prof) + ".backup.json", "firefox")
++            elif src == "html":
++                parsed = formats.read_file(str(prof) + ".export.html", "html")
++            else:
++                continue
++        except Exception as e:
++            print(f"--- {src}: FAILED {type(e).__name__}: {e}")
++            ok = False
++            continue
++        want = truth_items(truth, include_place_queries=args.place_queries)
++        got = mhbm_items(parsed)
++        if src == "html":  # Firefox's own HTML export names its roots differently and has its own entity rules: compare content only
++            got = [("",) + r[1:] for r in got]
++            want = [("",) + r[1:] for r in want]
++            ok &= diff(src, got, want, set(), set())
++        else:
++            ok &= diff(src, got, want, set(parsed.folders), truth_folders(truth))
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/copy_variants.py b/tests/real_firefox/copy_variants.py
+--- a/tests/real_firefox/copy_variants.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/copy_variants.py	2026-10-15 07:35:22.262376338 +0000
+@@ -0,0 +1,62 @@
++"""The pre-fix way of copying a live places.sqlite (database, then -wal and -shm, no verification), instrumented, and a switch that
++widens the copy window by copying in slow chunks (slow disk, antivirus scan, network drive).  Used by live_test.py's stress mode to
++compare it with whatever `mhbm.browsers._copy` does now."""
++from __future__ import annotations
++
++import shutil
++import tempfile
++import time
++from pathlib import Path
++
++STATS = {"copies": 0, "changed": 0, "wal_reset": 0, "db_changed": 0}
++_real_copy2 = shutil.copy2
++
++
++def fingerprint(path: Path):
++    """(db mtime_ns, db size, first 32 bytes of the -wal): the WAL header changes (salts, checkpoint sequence) when SQLite restarts the WAL."""
++    st = path.stat()
++    try:
++        with open(path.with_name(path.name + "-wal"), "rb") as f:
++            head = f.read(32)
++    except FileNotFoundError:
++        head = b""
++    return st.st_mtime_ns, st.st_size, head
++
++
++def instrumented_naive(path: Path) -> Path:
++    """The old algorithm, byte for byte, plus counters for how often the files moved while it copied."""
++    tmp = Path(tempfile.mkdtemp(prefix="mhbm-"))
++    before = fingerprint(path)
++    dest = tmp / path.name
++    shutil.copy2(path, dest)
++    for ext in ("-wal", "-shm"):
++        side = path.with_name(path.name + ext)
++        if side.exists():
++            shutil.copy2(side, tmp / side.name)
++    after = fingerprint(path)
++    STATS["copies"] += 1
++    if before != after:
++        STATS["changed"] += 1
++        STATS["wal_reset"] += before[2][:24] != after[2][:24]
++        STATS["db_changed"] += before[:2] != after[:2]
++    return dest
++
++
++def install_slow(chunk: int, pause: float) -> None:
++    """Make shutil.copy2 copy `chunk` bytes at a time with `pause` seconds in between (for every caller in this process)."""
++    def slow_copy2(src, dst, *a, **k):
++        target = Path(dst) / Path(src).name if Path(dst).is_dir() else Path(dst)
++        with open(src, "rb") as r, open(target, "wb") as w:
++            while True:
++                block = r.read(chunk)
++                if not block:
++                    break
++                w.write(block)
++                time.sleep(pause)
++        return str(target)
++
++    shutil.copy2 = slow_copy2
++
++
++def uninstall_slow() -> None:
++    shutil.copy2 = _real_copy2
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/discover_layout.py b/tests/real_firefox/discover_layout.py
+--- a/tests/real_firefox/discover_layout.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/discover_layout.py	2026-10-15 07:35:22.246047656 +0000
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python3
++"""Where does a REAL Firefox put its profile when started with NO -profile argument?  (Linux layout discovery.)
++
++usage: MHBM_FIREFOX_DIR=... python3 -I discover_layout.py <fresh-home-dir> [--env KEY=VAL ...] [--args ...]
++Starts headless Firefox with HOME=<fresh-home-dir> (so nothing real is touched), waits for the profile to appear, quits cleanly,
++then prints the tree of files created under HOME that matter (profiles.ini, installs.ini, Profile Groups, places.sqlite).
++"""
++from __future__ import annotations
++
++import argparse
++import os
++import shutil
++import sys
++import time
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import ffenv
++import marionette
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("home")
++    ap.add_argument("--env", action="append", default=[])
++    ap.add_argument("--args", nargs="*", default=[])
++    ap.add_argument("--wait", type=float, default=6)
++    ap.add_argument("--mkdir", action="append", default=[], help="relative dir to create under HOME before starting")
++    ap.add_argument("--js", default="", help="extra chrome JS to run (function body) before quitting; result printed")
++    a = ap.parse_args()
++    ffenv.ensure_netns()
++    home = Path(a.home).resolve()
++    shutil.rmtree(home, ignore_errors=True)
++    home.mkdir(parents=True)
++    for rel in a.mkdir:
++        (home / rel).mkdir(parents=True, exist_ok=True)
++    d = ffenv.firefox_dir()
++    import subprocess
++    env = ffenv.env_for(home)
++    for kv in a.env:
++        k, v = kv.split("=", 1)
++        env[k] = v
++    # NB: ffenv.env_for sets XDG_*; drop them unless explicitly given so we see Firefox's own default choice
++    for k in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
++        if not any(kv.startswith(k + "=") for kv in a.env):
++            env.pop(k, None)
++    cmd = [str(d / os.environ.get("MHBM_GECKO_EXE", "firefox")), "-headless", "-no-remote", "-marionette", "--remote-allow-system-access", *a.args]
++    with open(home / "ff.log", "wb") as log:
++        p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
++    try:
++        m = marionette.Marionette()
++        m.connect(60)
++        m.new_session()
++        m.chrome()
++        time.sleep(a.wait)
++        info = m.run("""
++          const dir = Services.dirsvc.get("ProfD", Ci.nsIFile).path;
++          const svc = Cc["@mozilla.org/toolkit/profile-service;1"].getService(Ci.nsIToolkitProfileService);
++          return {ProfD: dir, version: Services.appinfo.version, profileCount: svc.profileCount,
++                  default: svc.defaultProfile && svc.defaultProfile.rootDir.path, current: svc.currentProfile && svc.currentProfile.rootDir.path,
++                  profiles: Array.from(svc.profiles, p => ({name: p.name, root: p.rootDir.path, local: p.localDir.path}))};
++        """)
++        print("firefox says:", {k: (v if not isinstance(v, str) else v.replace(str(home), "$HOME")) for k, v in info.items() if k in ("ProfD", "version", "profileCount")})
++        if a.js:
++            print("js result:", str(m.run(a.js)).replace(str(home), "$HOME"))
++        m.quit(("eAttemptQuit",))
++        p.wait(30)
++    finally:
++        ffenv.kill_group(p)
++    print("files under HOME (depth<=4, interesting only):")
++    for root, dirs, files in os.walk(home):
++        depth = Path(root).relative_to(home).parts
++        if len(depth) > 4:
++            dirs[:] = []
++            continue
++        for f in sorted(files):
++            if f in ("profiles.ini", "installs.ini", "places.sqlite", "compatibility.ini") or f.endswith(".ini") or f.startswith("Profile Groups") or (f.endswith("sqlite") and "Profile" in root):
++                print("  ", Path(root, f).relative_to(home))
++        for dn in sorted(dirs):
++            if dn in ("Profile Groups", "Profiles", "firefox", "mozilla", ".mozilla"):
++                print("   [dir]", Path(root, dn).relative_to(home))
++    for f in home.rglob("*.ini"):
++        if f.name in ("profiles.ini", "installs.ini"):
++            print(f"=== {f.relative_to(home)}")
++            print(f.read_text())
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/extract_conda.py b/tests/real_firefox/extract_conda.py
+--- a/tests/real_firefox/extract_conda.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/extract_conda.py	2026-10-15 07:35:22.223980942 +0000
+@@ -0,0 +1,30 @@
++#!/usr/bin/env python3
++"""Extract a .conda package (a zip of pkg-*.tar.zst + info-*.tar.zst) into an EMPTY directory after verifying its sha256.
++
++usage: python3 -I extract_conda.py <pkg.conda> <expected-sha256> <empty-dest-dir>
++Needs the `zstandard` wheel from PyPI (only this helper does; the code under test, mhbm, is standard library only).
++The tarfile 'data' filter refuses absolute paths, links that leave the destination, devices and set-uid bits.
++"""
++import hashlib
++import io
++import sys
++import tarfile
++import zipfile
++from pathlib import Path
++
++import zstandard
++
++pkg, want, dest = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
++digest = hashlib.sha256(pkg.read_bytes()).hexdigest()
++if digest != want:
++    sys.exit(f"sha256 mismatch: {digest} != {want}")
++if dest.exists() and any(dest.iterdir()):
++    sys.exit("destination must be empty")
++dest.mkdir(parents=True, exist_ok=True)
++with zipfile.ZipFile(pkg) as z:
++    for name in z.namelist():
++        if name.endswith(".tar.zst"):
++            raw = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(z.read(name)))
++            with tarfile.open(fileobj=raw, mode="r|") as t:
++                t.extractall(dest, filter="data")
++print("extracted", pkg.name, "to", dest)
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/ffenv.py b/tests/real_firefox/ffenv.py
+--- a/tests/real_firefox/ffenv.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/ffenv.py	2026-10-15 07:35:22.257221760 +0000
+@@ -0,0 +1,137 @@
++"""Shared helpers: locate the Gecko binary, write user.js, launch Firefox headless inside a loopback-only netns.
++
++The binary is located through $MHBM_FIREFOX_DIR (directory that contains the `firefox` executable, i.e. the
++extracted Mozilla tarball / conda-forge `bin/FirefoxApp`).  Everything is stdlib-only.
++"""
++from __future__ import annotations
++
++import os
++import signal
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++
++# Prefs that keep a throw-away profile quiet and offline.  (The netns is the real guarantee; these stop noisy retries.)
++QUIET_PREFS = {
++    "datareporting.policy.dataSubmissionEnabled": False,
++    "datareporting.healthreport.uploadEnabled": False,
++    "toolkit.telemetry.enabled": False,
++    "toolkit.telemetry.unified": False,
++    "toolkit.telemetry.server": "http://127.0.0.1:9/",
++    "toolkit.telemetry.reportingpolicy.firstRun": False,
++    "app.update.enabled": False,
++    "app.update.auto": False,
++    "app.update.checkInstallTime": False,
++    "app.update.service.enabled": False,
++    "browser.shell.checkDefaultBrowser": False,
++    "browser.startup.homepage": "about:blank",
++    "browser.startup.page": 0,
++    "browser.aboutwelcome.enabled": False,
++    "browser.disableResetPrompt": True,
++    "browser.region.update.enabled": False,
++    "browser.search.update": False,
++    "browser.safebrowsing.malware.enabled": False,
++    "browser.safebrowsing.phishing.enabled": False,
++    "browser.safebrowsing.downloads.enabled": False,
++    "extensions.update.enabled": False,
++    "extensions.blocklist.enabled": False,
++    "app.normandy.enabled": False,
++    "services.settings.server": "http://127.0.0.1:9/v1",
++    "network.captive-portal-service.enabled": False,
++    "network.connectivity-service.enabled": False,
++    "network.http.speculative-parallel-limit": 0,
++    "network.dns.disablePrefetch": True,
++    "network.prefetch-next": False,
++    "network.proxy.type": 1,                      # blackhole proxy: belt and braces next to the netns
++    "network.proxy.http": "127.0.0.1", "network.proxy.http_port": 9,
++    "network.proxy.ssl": "127.0.0.1", "network.proxy.ssl_port": 9,
++    "network.proxy.no_proxies_on": "",
++    "startup.homepage_welcome_url": "",
++    "startup.homepage_welcome_url.additional": "",
++    "toolkit.startup.max_resumed_crashes": -1,
++    "browser.tabs.warnOnClose": False,
++    "browser.sessionstore.resume_from_crash": False,
++}
++
++
++def firefox_dir() -> Path:
++    d = os.environ.get("MHBM_FIREFOX_DIR")
++    if not d:
++        raise SystemExit("set MHBM_FIREFOX_DIR to the directory containing the `firefox` executable")
++    return Path(d)
++
++
++def js_pref(name: str, value) -> str:
++    if isinstance(value, bool):
++        v = "true" if value else "false"
++    elif isinstance(value, int):
++        v = str(value)
++    else:
++        v = '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
++    return f'user_pref("{name}", {v});\n'
++
++
++def write_user_js(profile: Path, prefs: dict) -> None:
++    profile.mkdir(parents=True, exist_ok=True)
++    allprefs = {**QUIET_PREFS, **prefs}
++    (profile / "user.js").write_text("".join(js_pref(k, v) for k, v in allprefs.items()), encoding="utf-8")
++
++
++def env_for(home: Path) -> dict:
++    d = firefox_dir()
++    env = {k: v for k, v in os.environ.items() if not k.startswith(("MOZ_", "XDG_")) and k not in ("DISPLAY", "WAYLAND_DISPLAY")}
++    for k in list(env):
++        if k.lower().endswith("_proxy"):
++            del env[k]
++    env.update({
++        "HOME": str(home), "LD_LIBRARY_PATH": str(d),
++        "MOZ_HEADLESS": "1", "MOZ_CRASHREPORTER_DISABLE": "1", "MOZ_DISABLE_CONTENT_SANDBOX": "1",
++        "MOZ_DISABLE_GMP_SANDBOX": "1", "MOZ_DISABLE_RDD_SANDBOX": "1", "MOZ_DISABLE_SOCKET_PROCESS_SANDBOX": "1",
++        "MOZ_DISABLE_AUTO_SAFE_MODE": "1", "MOZ_NO_REMOTE": "1", "MOZ_SERVICES_HEALTHREPORT": "0",
++        "XDG_CONFIG_HOME": str(home / ".config"), "XDG_CACHE_HOME": str(home / ".cache"), "XDG_DATA_HOME": str(home / ".local/share"),
++    })
++    return env
++
++
++def launch(profile: Path, home: Path, *, extra_args=(), log: Path | None = None, netns: bool = True) -> subprocess.Popen:
++    """Start Firefox headless on ``profile``.  Returns the Popen (own process group; kill with ``kill_group``)."""
++    d = firefox_dir()
++    home.mkdir(parents=True, exist_ok=True)
++    cmd = [str(d / os.environ.get("MHBM_GECKO_EXE", "firefox")), "-headless", "-profile", str(profile), "-no-remote", *extra_args]
++    if netns:
++        cmd = ["unshare", "-n", sys.executable, "-I", str(HERE / "netns_exec.py"), "--"] + cmd
++    if log is None:
++        return subprocess.Popen(cmd, env=env_for(home), stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, start_new_session=True)
++    with open(log, "wb") as out:  # the child keeps its own duplicate of the descriptor
++        return subprocess.Popen(cmd, env=env_for(home), stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
++
++
++def kill_group(p: subprocess.Popen, sig=signal.SIGKILL) -> None:
++    try:
++        os.killpg(p.pid, sig)
++    except ProcessLookupError:
++        pass
++    try:
++        p.wait(timeout=20)
++    except subprocess.TimeoutExpired:
++        pass
++
++
++def wait_for(path_pred, timeout: float, step: float = 0.2) -> bool:
++    end = time.time() + timeout
++    while time.time() < end:
++        if path_pred():
++            return True
++        time.sleep(step)
++    return False
++
++
++def ensure_netns() -> None:
++    """Re-exec the current script inside a loopback-only network namespace (once)."""
++    if os.environ.get("MHBM_IN_NETNS") == "1" or os.environ.get("MHBM_NO_NETNS") == "1":  # NO_NETNS: CI runners without unshare rights
++        return
++    os.environ["MHBM_IN_NETNS"] = "1"
++    os.execvp("unshare", ["unshare", "-n", sys.executable, "-I", str(HERE / "netns_exec.py"), "--", sys.executable, "-I", *sys.argv])
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/live_test.py b/tests/real_firefox/live_test.py
+--- a/tests/real_firefox/live_test.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/live_test.py	2026-10-15 07:35:22.273244833 +0000
+@@ -0,0 +1,198 @@
++#!/usr/bin/env python3
++"""What happens when mhbm reads a profile WHILE REAL FIREFOX IS RUNNING and writing?
++
++usage: MHBM_FIREFOX_DIR=... MHBM_SCRIPTS=<skill>/scripts python3 -I live_test.py <profile-template-dir> <workdir>
++           [--seconds 20] [--ckpt-ms 40] [--variants baseline,shipped]
++
++Phase A  static facts about a running Gecko profile (files present, lock, direct read-only open attempts, mhbm.load on it)
++Phase B  stress: Gecko inserts bookmarks one commit at a time and force-checkpoints (`PRAGMA wal_checkpoint(TRUNCATE)`)
++         every --ckpt-ms while this script copies+parses the live profile over and over.  A consistent snapshot must
++         contain bookmarks race-0..race-k with no holes.  `baseline` = the old unverified db+wal copy; `shipped` = the
++         `shipped` = whatever mhbm.browsers._copy does in the tree under test (the copy-and-verify of the Gecko patch).
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import shutil
++import sqlite3
++import sys
++import time
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++sys.dont_write_bytecode = True
++import ffenv  # noqa: E402
++import marionette  # noqa: E402
++
++START_JS = r"""
++const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++const B = PlacesUtils.bookmarks;
++const folder = await B.insert({parentGuid: B.unfiledGuid, type: B.TYPE_FOLDER, title: "Race"});
++const st = globalThis.__race = {i: 0, stop: false, errors: [], ckpts: 0};
++const ckptMs = arguments[0], writeMs = arguments[1];
++(async () => { while (!st.stop) { try { await B.insert({parentGuid: folder.guid, url: `https://race.example.org/${st.i}`, title: `race-${st.i}`}); st.i++; if (writeMs) await new Promise(r => setTimeout(r, writeMs)); } catch (e) { st.errors.push(String(e)); } } })();
++(async () => { while (!st.stop) { try { await PlacesUtils.withConnectionWrapper("ckpt", db => db.execute("PRAGMA wal_checkpoint(TRUNCATE)")); st.ckpts++; } catch (e) { st.errors.push("ckpt " + e); } await new Promise(r => setTimeout(r, ckptMs)); } })();
++return folder.guid;
++"""
++STOP_JS = "const st = globalThis.__race; st.stop = true; return {inserted: st.i, ckpts: st.ckpts, errors: st.errors.slice(0, 5)};"
++
++
++def snapshot_check(parsed) -> tuple:
++    """(ok, n) - the Race folder must hold race-0..race-(n-1) with no holes."""
++    nums = sorted(int(b.title.split("-")[1]) for b in parsed if b.folder.endswith("/Race") or b.folder == "Race")
++    return (nums == list(range(len(nums))), len(nums))
++
++
++def fast_check(dest: Path) -> tuple:
++    """integrity_check + 'no holes in race-N' on a copy.  Returns (ok, detail)."""
++    c = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
++    try:
++        integ = c.execute("pragma integrity_check").fetchall()
++        if integ != [("ok",)]:
++            return False, "integrity_check: " + "; ".join(str(r[0])[:60] for r in integ[:2])
++        n, mx = c.execute("select count(*), max(cast(substr(title, 6) as integer)) from moz_bookmarks where title like 'race-%'").fetchone()
++        if n and n != mx + 1:
++            return False, f"hole: {n} rows but max index {mx}"
++        return True, str(n)
++    finally:
++        c.close()
++
++
++def run_variant_fast(name, copy_fn, prof: Path, copies: int) -> dict:
++    res = {"variant": name, "copies": 0, "ok": 0, "bad": 0, "details": {}}
++    for _ in range(copies):
++        try:
++            dest = copy_fn(prof / "places.sqlite")
++        except Exception:
++            res["copies"] += 1
++            res["refused"] = res.get("refused", 0) + 1
++            continue
++        try:
++            good, detail = fast_check(dest)
++        except sqlite3.Error as e:
++            good, detail = False, f"{type(e).__name__}: {str(e)[:70]}"
++        finally:
++            shutil.rmtree(dest.parent, ignore_errors=True)
++        res["copies"] += 1
++        res["ok" if good else "bad"] += 1
++        if not good:
++            res["details"][detail] = res["details"].get(detail, 0) + 1
++    return res
++
++
++def run_variant(browsers, name, copy_fn, prof: Path, seconds: float, work: Path) -> dict:
++    res = {"variant": name, "copies": 0, "ok": 0, "holes": 0, "errors": {}, "max_n": 0, "retries_total": 0, "copy_ms": []}
++    end = time.time() + seconds
++    orig = browsers._copy
++    browsers._copy = copy_fn
++    try:
++        while time.time() < end:
++            t = time.time()
++            try:
++                parsed = browsers.load("firefox", profile=str(prof / "places.sqlite"))
++                good, n = snapshot_check(parsed)
++                res["copies"] += 1
++                res["ok" if good else "holes"] += 1
++                res["max_n"] = max(res["max_n"], n)
++            except Exception as e:
++                res["copies"] += 1
++                k = f"{type(e).__name__}: {str(e)[:80]}"
++                res["errors"][k] = res["errors"].get(k, 0) + 1
++            res["copy_ms"].append((time.time() - t) * 1000)
++    finally:
++        browsers._copy = orig
++    ms = sorted(res.pop("copy_ms"))
++    res["load_ms_p50"], res["load_ms_p95"] = round(ms[len(ms) // 2], 1), round(ms[int(len(ms) * 0.95)], 1)
++    return res
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("template")
++    ap.add_argument("work")
++    ap.add_argument("--seconds", type=float, default=20)
++    ap.add_argument("--ckpt-ms", type=int, default=40)
++    ap.add_argument("--variants", default="baseline", help="comma list of: baseline, shipped")
++    ap.add_argument("--probe", action="store_true", help="only Phase A (no writer, no stress) plus a comparison with <template>.truth.json")
++    ap.add_argument("--write-ms", type=int, default=0, help="pause between Gecko-side inserts (0 = flat out)")
++    ap.add_argument("--fast", type=int, default=0, help="N copies per variant checked with integrity_check/holes instead of full parse")
++    ap.add_argument("--slow", default="", help="chunk_bytes,sleep_ms to widen the copy window, e.g. 262144,2")
++    args = ap.parse_args()
++    ffenv.ensure_netns()
++    sys.path.insert(0, os.environ["MHBM_SCRIPTS"])
++    from mhbm import browsers
++
++    work = Path(args.work).resolve()
++    shutil.rmtree(work, ignore_errors=True)
++    prof = work / "profile"
++    shutil.copytree(args.template, prof, ignore=shutil.ignore_patterns("lock", ".parentlock", "*.log"))
++    ffenv.write_user_js(prof, {})
++    proc = ffenv.launch(prof, work / "home", log=work / "ff.log", netns=False, extra_args=["-marionette", "--remote-allow-system-access"])
++    report: dict = {}
++    try:
++        m = marionette.Marionette()
++        m.connect(90)
++        m.new_session()
++        m.chrome()
++        time.sleep(2)
++        if not args.probe:
++            m.run(START_JS, [args.ckpt_ms, args.write_ms])
++            time.sleep(1.0)
++        # ---------------- Phase A
++        a: dict = {"files": {f: os.lstat(prof / f).st_size for f in sorted(os.listdir(prof)) if f.startswith(("places", "lock", ".parentlock"))}}
++        a["lock_target"] = os.readlink(prof / "lock") if (prof / "lock").is_symlink() else None
++        db = prof / "places.sqlite"
++        for label, uri in (("ro", f"file:{db}?mode=ro"), ("immutable", f"file:{db}?mode=ro&immutable=1")):
++            try:
++                c = sqlite3.connect(uri, uri=True, timeout=0.5)
++                a[f"direct_{label}"] = f"opened; bookmarks={c.execute('select count(*) from moz_bookmarks').fetchone()[0]}"
++                c.close()
++            except sqlite3.Error as e:
++                a[f"direct_{label}"] = f"{type(e).__name__}: {e}"
++        try:
++            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
++            a["direct_ro_user_version"] = c.execute("pragma user_version").fetchone()[0]
++            c.close()
++        except sqlite3.Error as e:
++            a["direct_ro_user_version"] = f"{type(e).__name__}: {e}"
++        t = time.time()
++        parsed = browsers.load("firefox", profile=str(db))
++        a["mhbm_load_live"] = f"{len(parsed)} bookmarks in {(time.time() - t) * 1000:.0f} ms"
++        truth_file = Path(str(Path(args.template).resolve()) + ".truth.json")
++        if args.probe and truth_file.exists():
++            import compare
++            want = sorted(compare.truth_items(json.loads(truth_file.read_text(encoding="utf-8")), include_place_queries=False))
++            got = sorted(compare.mhbm_items(parsed))
++            a["live_load_equals_gecko_truth"] = got == want
++            a["direct_ro_blocked"] = "database is locked" in str(a.get("direct_ro"))
++        report["phase_A"] = a
++        if args.probe:
++            m.quit(("eAttemptQuit",))
++            proc.wait(60)
++            print(json.dumps(report, ensure_ascii=False, indent=1))
++            return 0
++        # ---------------- Phase B
++        import copy_variants
++        variants = {"baseline": copy_variants.instrumented_naive, "shipped": browsers._copy}
++        report["phase_B"] = []
++        for v in args.variants.split(","):
++            for k in copy_variants.STATS:
++                copy_variants.STATS[k] = 0
++            if args.slow:
++                copy_variants.install_slow(int(args.slow.split(",")[0]), float(args.slow.split(",")[1]) / 1000)
++            r = run_variant_fast(v, variants[v], prof, args.fast) if args.fast else run_variant(browsers, v, variants[v], prof, args.seconds, work)
++            r["copy_stats"] = dict(copy_variants.STATS) if v == "baseline" else None
++            report["phase_B"].append(r)
++        report["writer"] = m.run(STOP_JS)
++        m.quit(("eAttemptQuit",))
++        proc.wait(60)
++    finally:
++        ffenv.kill_group(proc)
++    print(json.dumps(report, ensure_ascii=False, indent=1))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/make_fixture.py b/tests/real_firefox/make_fixture.py
+--- a/tests/real_firefox/make_fixture.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/make_fixture.py	2026-10-15 07:35:22.234375418 +0000
+@@ -0,0 +1,61 @@
++#!/usr/bin/env python3
++"""Turn a profile written by REAL Gecko (build_profile.py --extras, clean exit) into small committed test fixtures.
++
++usage: python3 -I make_fixture.py <profile-dir> <out-dir>
++  writes  <out>/places-firefox<MAJOR>.sqlite.gz   VACUUM INTO copy of the real places.sqlite (still Firefox's own schema, 32 KiB pages)
++          <out>/bookmarks-firefox<MAJOR>.jsonlz4   the real bookmarkbackups file, byte for byte
++          <out>/expected-firefox<MAJOR>.json       what Gecko itself reported (PlacesUtils.promiseBookmarksTree) flattened as mhbm should read it
++          <out>/PROVENANCE.txt
++Everything in the fixtures is synthetic (example.org hosts, invented titles).
++"""
++from __future__ import annotations
++
++import gzip
++import hashlib
++import json
++import os
++import shutil
++import sqlite3
++import sys
++import tempfile
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import compare
++
++
++def main() -> None:
++    prof, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
++    truth = json.loads(Path(str(prof) + ".truth.json").read_text(encoding="utf-8"))
++    major = truth["version"].split(".")[0]
++    out.mkdir(parents=True, exist_ok=True)
++    tmp = Path(tempfile.mkdtemp())
++    shutil.copy(prof / "places.sqlite", tmp / "in.sqlite")
++    if (prof / "places.sqlite-wal").exists():
++        shutil.copy(prof / "places.sqlite-wal", tmp / "in.sqlite-wal")
++    c = sqlite3.connect(tmp / "in.sqlite")
++    c.execute(f"VACUUM INTO '{tmp / 'out.sqlite'}'")
++    c.close()
++    raw = (tmp / "out.sqlite").read_bytes()
++    with open(out / f"places-firefox{major}.sqlite.gz", "wb") as f, gzip.GzipFile(fileobj=f, mode="wb", mtime=0, compresslevel=9) as z:
++        z.write(raw)
++    backups = sorted((prof / "bookmarkbackups").glob("bookmarks-*.jsonlz4"))
++    shutil.copy(backups[-1], out / f"bookmarks-firefox{major}.jsonlz4")
++    rows = compare.truth_items(truth, include_place_queries=False)
++    expected = {"bookmarks": [{"folder": r[0], "url": r[1], "title": r[2], "tags": list(r[3]), "added": r[4]} for r in rows],
++                "folders": sorted(compare.truth_folders(truth))}
++    (out / f"expected-firefox{major}.json").write_text(json.dumps(expected, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
++    (out / "PROVENANCE.txt").write_text(
++        f"Written by a real Mozilla Firefox {truth['version']} (buildID {truth['buildID']}), headless, in a network namespace with only loopback.\n"
++        f"Source: a synthetic Netscape bookmarks file imported through browser.places.importBookmarksHTML, plus PlacesUtils API calls\n"
++        f"(mobile root, API tags, a keyword with POST data, separators, a place: query).  See tests/real_firefox/.\n"
++        f"places-firefox{major}.sqlite.gz: VACUUM INTO of the closed profile's places.sqlite (sha256 of the uncompressed file {hashlib.sha256(raw).hexdigest()}).\n"
++        f"bookmarks-firefox{major}.jsonlz4: the file Firefox wrote to bookmarkbackups/, unmodified.\n"
++        f"expected-firefox{major}.json: Gecko's own view of the tree, flattened the way mhbm names roots (menu->Bookmarks menu, toolbar->Bookmarks bar,\n"
++        f"unfiled->Other bookmarks, mobile->Mobile bookmarks; place: queries excluded; tags normalised like model.clean_tags).\n", encoding="utf-8")
++    shutil.rmtree(tmp)
++    print("wrote", sorted(os.listdir(out)))
++
++
++if __name__ == "__main__":
++    main()
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/make_netscape.py b/tests/real_firefox/make_netscape.py
+--- a/tests/real_firefox/make_netscape.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/make_netscape.py	2026-10-15 07:35:22.279364420 +0000
+@@ -0,0 +1,126 @@
++#!/usr/bin/env python3
++"""Synthetic Netscape bookmark files used as the SOURCE that real Firefox imports.
++
++* messy()  - tests/fixtures/gen_messy_library.py output (Chrome-flavoured: 592 bookmarks, 100 folders, Persian titles...)
++* rich()   - hand-written, Firefox-flavoured: TAGS, SHORTCUTURL, <HR> separators, <DD> descriptions, the toolbar /
++             unfiled roots, odd URL schemes, entities, a 3-digit-depth tree, a slash in a folder name, RTL/Persian text.
++
++Nothing here comes from a real person: every host is *.example / example.org, every title is invented.
++usage: make_netscape.py <outdir>   (writes messy.html and rich.html)
++"""
++from __future__ import annotations
++
++import html
++import sys
++from pathlib import Path
++
++FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
++
++
++def messy() -> str:
++    sys.dont_write_bytecode = True
++    sys.path.insert(0, str(FIXTURES))
++    import gen_messy_library as g
++    return g.generate()
++
++
++def a(url, title, add=1600000000, mod=None, **attrs):
++    extra = "".join(f' {k.upper()}="{html.escape(str(v), quote=True)}"' for k, v in attrs.items())
++    mod = f' LAST_MODIFIED="{mod}"' if mod else ""
++    return f'<DT><A HREF="{html.escape(url, quote=True)}" ADD_DATE="{add}"{mod}{extra}>{html.escape(title, quote=False)}</A>'
++
++
++def rich() -> str:
++    long_url = "https://long.example.org/" + "/".join(f"segment{i}" for i in range(300)) + "?q=" + "x" * 1500
++    deep = []
++    for d in range(1, 13):
++        deep.append("    " * d + f'<DT><H3 ADD_DATE="1500000000">Level {d}</H3>')
++        deep.append("    " * d + "<DL><p>")
++    deep.append("    " * 13 + a("https://deep.example.org/bottom", "Bottom of a 12-level tree", 1500000123))
++    for d in range(12, 0, -1):
++        deep.append("    " * d + "</DL><p>")
++    out = f"""<!DOCTYPE NETSCAPE-Bookmark-file-1>
++<!-- This is an automatically generated file.
++     It will be read and overwritten.
++     DO NOT EDIT! -->
++<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
++<TITLE>Bookmarks</TITLE>
++<H1>Bookmarks Menu</H1>
++
++<DL><p>
++    <DT><H3 ADD_DATE="1400000000" LAST_MODIFIED="1400000001">Menu folder one</H3>
++    <DL><p>
++        {a("https://menu1.example.org/a", "Menu item A", 1600000001, 1600000002, tags="alpha,beta", shortcuturl="mka")}
++        <DD>A description for Menu item A (two words: café ☕)
++        {a("https://menu1.example.org/b", "Menu item B with & entity <b>", 1600000003, tags="gamma delta,شهر")}
++        <HR>
++        {a("https://menu1.example.org/c", "  padded   title  ", 1600000005)}
++    </DL><p>
++    {a("https://menu.example.org/loose", "Loose menu bookmark", 1600000010)}
++    <DT><H3 ADD_DATE="1400000100">پوشهٔ فارسی</H3>
++    <DL><p>
++        {a("https://fa.example.org/صفحه", "عنوان فارسی ۱۲۳ بین‌المللی", 1600000020, tags="فارسی,persian")}
++        {a("https://xn--mgbh0fb.example/صفحه", "IDN host", 1600000021)}
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000200">Q&amp;A / FAQ</H3>
++    <DL><p>
++        {a("https://slash.example.org/1", "Inside a folder whose name has a slash", 1600000030)}
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000300">Odd schemes</H3>
++    <DL><p>
++        {a("javascript:void(document.title='x')", "Bookmarklet", 1600000040)}
++        {a("data:text/html,<h1>hi</h1>", "Data URL", 1600000041)}
++        {a("about:config", "about:config", 1600000042)}
++        {a("file:///tmp/example/notes.txt", "Local file", 1600000043)}
++        {a("mailto:someone@example.org", "Mail link", 1600000044)}
++        {a("place:type=6&sort=14&maxResults=10", "A smart bookmark (place: query)", 1600000045)}
++        {a(long_url, "Very long URL", 1600000046)}
++        {a("https://example.org/#frag", "Fragment", 1600000047)}
++        {a("https://example.org/dup", "Same URL, folder one", 1600000048)}
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000400">Dates</H3>
++    <DL><p>
++        {a("https://dates.example.org/zero", "ADD_DATE zero", 0)}
++        {a("https://dates.example.org/old", "ADD_DATE 1996", 835000000)}
++        {a("https://dates.example.org/future", "ADD_DATE 2200", 7258118400)}
++        {a("https://dates.example.org/ms", "ADD_DATE in milliseconds", 1600000000000)}
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000500">Deep tree</H3>
++    <DL><p>
++{chr(10).join(deep)}
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000600" LAST_MODIFIED="1400000700" PERSONAL_TOOLBAR_FOLDER="true">Bookmarks Toolbar</H3>
++    <DD>The toolbar folder description
++    <DL><p>
++        {a("https://toolbar.example.org/one", "Toolbar one", 1600000100, tags="toolbar-tag")}
++        {a("https://example.org/dup", "Same URL, toolbar copy", 1600000101)}
++        <DT><H3 ADD_DATE="1400000800">Toolbar sub</H3>
++        <DL><p>
++            {a("https://toolbar.example.org/sub", "Toolbar sub item", 1600000102, shortcuturl="tsub", tags="x")}
++            <HR>
++            <HR>
++            {a("https://toolbar.example.org/sub2", "After two separators", 1600000103)}
++        </DL><p>
++    </DL><p>
++    <DT><H3 ADD_DATE="1400000900" LAST_MODIFIED="1400001000" UNFILED_BOOKMARKS_FOLDER="true">Other Bookmarks</H3>
++    <DL><p>
++        {a("https://unfiled.example.org/one", "Unfiled one", 1600000200)}
++        <DT><H3 ADD_DATE="1400001100">Empty folder</H3>
++        <DL><p>
++        </DL><p>
++        <DT><H3 ADD_DATE="1400001200">Folder with trailing space </H3>
++        <DL><p>
++            {a("https://unfiled.example.org/two", "Unfiled two", 1600000201, tags="Mixed Case,UPPER")}
++        </DL><p>
++    </DL><p>
++</DL><p>
++"""
++    return out
++
++
++if __name__ == "__main__":
++    outdir = Path(sys.argv[1])
++    outdir.mkdir(parents=True, exist_ok=True)
++    (outdir / "messy.html").write_text(messy(), encoding="utf-8")
++    (outdir / "rich.html").write_text(rich(), encoding="utf-8")
++    print("wrote", outdir / "messy.html", outdir / "rich.html")
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/marionette.py b/tests/real_firefox/marionette.py
+--- a/tests/real_firefox/marionette.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/marionette.py	2026-10-15 07:35:22.285613861 +0000
+@@ -0,0 +1,80 @@
++"""Minimal stdlib Marionette client (protocol v3): enough to run chrome-privileged JS in a headless Firefox,
++e.g. to call PlacesUtils / PlacesBackups, and to quit cleanly.  No geckodriver, no selenium."""
++from __future__ import annotations
++
++import json
++import socket
++import time
++
++
++class MarionetteError(RuntimeError):
++    pass
++
++
++class Marionette:
++    def __init__(self, port: int = 2828, host: str = "127.0.0.1", timeout: float = 90):
++        self.addr, self.timeout = (host, port), timeout
++        self.sock = None
++        self._id = 0
++        self.buf = b""
++
++    def connect(self, wait: float = 60):
++        end = time.time() + wait
++        last = None
++        while time.time() < end:
++            try:
++                self.sock = socket.create_connection(self.addr, timeout=self.timeout)
++                hello = self._recv()
++                if isinstance(hello, dict) and hello.get("marionetteProtocol") == 3:
++                    return hello
++                last = hello
++            except OSError as e:
++                last = e
++                time.sleep(0.3)
++        raise MarionetteError(f"cannot connect to Marionette: {last}")
++
++    def _recv(self):
++        while b":" not in self.buf:
++            chunk = self.sock.recv(65536)
++            if not chunk:
++                raise MarionetteError("connection closed")
++            self.buf += chunk
++        head, rest = self.buf.split(b":", 1)
++        n = int(head)
++        while len(rest) < n:
++            chunk = self.sock.recv(65536)
++            if not chunk:
++                raise MarionetteError("connection closed mid-message")
++            rest += chunk
++        self.buf = rest[n:]
++        return json.loads(rest[:n].decode("utf-8"))
++
++    def command(self, name: str, params: dict | None = None):
++        self._id += 1
++        body = json.dumps([0, self._id, name, params or {}], ensure_ascii=False).encode("utf-8")
++        self.sock.sendall(str(len(body)).encode() + b":" + body)
++        while True:
++            msg = self._recv()
++            if msg[0] == 1 and msg[1] == self._id:
++                if msg[2]:
++                    raise MarionetteError(f"{name}: {msg[2].get('error')}: {msg[2].get('message')}")
++                return msg[3]
++
++    def new_session(self):
++        return self.command("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {"acceptInsecureCerts": True}}})
++
++    def chrome(self):
++        self.command("Marionette:SetContext", {"value": "chrome"})
++
++    def run(self, script: str, args: list | None = None):
++        """Run a *function body* (use ``return`` / ``await``) with chrome privileges; returns its JSON value."""
++        body = "return (async () => {\n" + script + "\n})();"
++        r = self.command("WebDriver:ExecuteScript", {"script": body, "args": args or [], "sandbox": "system"})
++        return r.get("value") if isinstance(r, dict) else r
++
++    def quit(self, flags=("eForceQuit",)):
++        """Clean application shutdown (Services.startup.quit): profile closed normally, WAL checkpointed."""
++        try:
++            self.command("Marionette:Quit", {"flags": list(flags)})
++        except (MarionetteError, OSError):
++            pass
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/netns_exec.py b/tests/real_firefox/netns_exec.py
+--- a/tests/real_firefox/netns_exec.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/netns_exec.py	2026-10-15 07:35:22.250745304 +0000
+@@ -0,0 +1,20 @@
++#!/usr/bin/env python3
++"""Run a command inside a fresh network namespace with ONLY loopback up (no route to anything else).
++
++usage: unshare -n python3 -I netns_exec.py -- <cmd> [args...]
++(We run as root in the sandbox; `unshare -n` works there.  Loopback is needed for Marionette, which listens on 127.0.0.1.)
++"""
++import fcntl
++import os
++import socket
++import struct
++import sys
++
++SIOCGIFFLAGS, SIOCSIFFLAGS, IFF_UP = 0x8913, 0x8914, 0x1
++s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++ifr = struct.pack("16sH14s", b"lo", 0, b"\0" * 14)
++flags = struct.unpack("16sH14s", fcntl.ioctl(s, SIOCGIFFLAGS, ifr))[1]
++fcntl.ioctl(s, SIOCSIFFLAGS, struct.pack("16sH14s", b"lo", flags | IFF_UP, b"\0" * 14))
++s.close()
++cmd = sys.argv[sys.argv.index("--") + 1:]
++os.execvp(cmd[0], cmd)
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/real_firefox/pin_firefox.py b/tests/real_firefox/pin_firefox.py
+--- a/tests/real_firefox/pin_firefox.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/real_firefox/pin_firefox.py	2026-10-15 07:35:22.267591601 +0000
+@@ -0,0 +1,21 @@
++#!/usr/bin/env python3
++"""Print the pin (file name, size, sha256, URL) for a Firefox build on conda-forge - a repack of Mozilla's official Linux build
++(its distribution.ini says `mozilla-official`; the `.sig` files are inside).  Standard library only.
++
++usage: python3 pin_firefox.py [VERSION]       (default: the newest in current_repodata)
++Use the `sha256` it prints in CI and verify the download against it (tests/real_firefox/extract_conda.py does)."""
++import bz2
++import json
++import sys
++import urllib.request
++
++BASE = "https://conda.anaconda.org/conda-forge/linux-64/"
++with urllib.request.urlopen(BASE + "current_repodata.json.bz2", timeout=120) as r:
++    data = json.loads(bz2.decompress(r.read()))
++pk = {**data.get("packages", {}), **data.get("packages.conda", {})}
++rows = sorted(((tuple(int(x) for x in m["version"].split(".") if x.isdigit()), m["build_number"], fn, m)
++               for fn, m in pk.items() if m["name"] == "firefox" and (len(sys.argv) < 2 or m["version"] == sys.argv[1])), key=lambda t: t[:2])
++if not rows:
++    sys.exit("no such firefox build in current_repodata (older versions: use repodata.json)")
++_, _, fn, m = rows[-1]
++print(json.dumps({"file": fn, "version": m["version"], "size": m["size"], "sha256": m["sha256"], "url": BASE + fn}, indent=1))
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/test_firefox_profiles.py b/tests/test_firefox_profiles.py
+--- a/tests/test_firefox_profiles.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_firefox_profiles.py	2026-10-15 07:35:50.992875194 +0000
+@@ -0,0 +1,366 @@
++"""Firefox / Gecko support against files REAL Firefox 157 wrote (tests/fixtures/firefox/), and profile discovery against the
++layouts real Firefox, Zen and Floorp create.  Nothing here needs a browser: tests/test_real_firefox.py drives one when available."""
++from __future__ import annotations
++
++import gzip
++import json
++import shutil
++import sqlite3
++import tempfile
++import time
++import unittest
++from pathlib import Path
++from unittest import mock
++
++import common  # noqa: F401  (puts scripts/ on sys.path, sets MHBM_LANG)
++from mhbm import browsers, formats, gecko, mcp_server
++
++FIX = Path(__file__).resolve().parent / "fixtures" / "firefox"
++EXPECTED = json.loads((FIX / "expected-firefox157.json").read_text(encoding="utf-8"))
++
++# profiles.ini / installs.ini exactly as Firefox 157.0.1 wrote them on a fresh Linux home (random names kept)
++PROFILES_INI = """[General]
++StartWithLastProfile=1
++Version=2
++
++[Profile0]
++Name=default-release
++IsRelative=1
++Path=wtr793rw.default-release
++
++[Profile1]
++Name=default
++IsRelative=1
++Path=byprd30h.default
++Default=1
++
++[InstallC107BF34762FDEC5]
++Default=wtr793rw.default-release
++Locked=1
++"""
++INSTALLS_INI = """[C107BF34762FDEC5]
++Default=wtr793rw.default-release
++Locked=1
++"""
++
++
++def fixture_db(dest: Path, marker: str = "") -> Path:
++    """Unpack the real places.sqlite; ``marker`` adds one extra bookmark so tests can tell profiles apart."""
++    dest.parent.mkdir(parents=True, exist_ok=True)
++    with gzip.open(FIX / "places-firefox157.sqlite.gz") as z:
++        dest.write_bytes(z.read())
++    if marker:
++        c = sqlite3.connect(dest)
++        try:
++            c.execute("INSERT INTO moz_places (url, url_hash, guid, rev_host) VALUES (?, 0, ?, '')", (f"https://{marker}.example.org/", marker.ljust(12, "x")[:12]))
++            fk = c.execute("SELECT last_insert_rowid()").fetchone()[0]
++            c.execute("INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid) "
++                      "VALUES (1, ?, 5, 99, ?, 1600000000000000, 1600000000000000, ?)", (fk, marker, marker.ljust(12, "y")[:12]))
++            c.commit()
++        finally:
++            c.close()
++    return dest
++
++
++def flat(parsed) -> list:
++    return sorted((b.folder, b.url, b.title, sorted(b.tags), b.added) for b in parsed)   # tag ORDER differs between sources, the set must not
++
++
++def want() -> list:
++    return sorted((b["folder"], b["url"], b["title"], sorted(b["tags"]), b["added"]) for b in EXPECTED["bookmarks"])
++
++
++class RealFirefoxFiles(unittest.TestCase):
++    def setUp(self):
++        self.tmp = Path(tempfile.mkdtemp())
++        self.addCleanup(shutil.rmtree, self.tmp, True)
++
++    def test_places_sqlite_matches_what_gecko_reports(self):
++        db = fixture_db(self.tmp / "places.sqlite")
++        got = browsers.load("firefox", profile=str(db))
++        self.assertEqual(flat(got), want())
++        self.assertEqual(sorted(got.folders), EXPECTED["folders"])
++
++    def test_jsonlz4_backup_matches_what_gecko_reports(self):
++        got = browsers.load("firefox", profile=str(FIX / "bookmarks-firefox157.jsonlz4"))
++        self.assertEqual(flat(got), want())
++        self.assertEqual(sorted(got.folders), EXPECTED["folders"])
++
++    def test_sqlite_and_backup_name_folders_alike(self):
++        """Re-importing the same profile from its backup must not create a second 'unfiled/...' tree (real backups call the root
++        `unfiledBookmarksFolder`) nor import `place:` queries that the sqlite reader skips."""
++        a = browsers.load("firefox", profile=str(fixture_db(self.tmp / "places.sqlite")))
++        b = browsers.load("firefox", profile=str(FIX / "bookmarks-firefox157.jsonlz4"))
++        self.assertEqual(flat(a), flat(b))
++        self.assertFalse([x for x in b if x.folder.startswith("unfiled") or x.url.startswith("place:")])
++
++    def test_the_real_lz4_stream_decodes_to_the_declared_size(self):
++        raw = (FIX / "bookmarks-firefox157.jsonlz4").read_bytes()
++        out = browsers.read_mozlz4(FIX / "bookmarks-firefox157.jsonlz4")
++        self.assertEqual(len(out), int.from_bytes(raw[8:12], "little"))
++        self.assertEqual(json.loads(out)["root"], "placesRoot")
++
++    def test_roots_tags_separators_keywords_and_odd_schemes(self):
++        got = {b.title: b for b in browsers.load("firefox", profile=str(fixture_db(self.tmp / "places.sqlite")))}
++        self.assertEqual(got["Mobile one"].folder, "Mobile bookmarks")
++        self.assertEqual(got["Toolbar one"].folder, "Bookmarks bar")
++        self.assertEqual(got["Unfiled one"].folder, "Other bookmarks")
++        self.assertEqual(got["Menu item A"].tags, ["alpha", "beta"])
++        self.assertEqual(got["API tagged"].tags, ["api-tag", "zeta", "تگب"])
++        self.assertIn("Bookmarklet", got)                      # javascript: bookmarks are kept
++        self.assertNotIn("A smart bookmark (place: query)", got)
++        self.assertEqual(got["Bottom of a 12-level tree"].folder.count("/"), 13)
++        self.assertEqual(got["ADD_DATE 2200"].added, 7258118400)
++        self.assertEqual(got["ADD_DATE in milliseconds"].added, 1600000000)   # Firefox stored ms x 10**6
++
++    def test_wal_sidecar_is_read(self):
++        """An uncheckpointed commit lives only in places.sqlite-wal (a running or killed Firefox): the copy must carry it."""
++        db = fixture_db(self.tmp / "live" / "places.sqlite")
++        c = sqlite3.connect(db)
++        try:
++            c.execute("PRAGMA journal_mode=WAL")
++            c.execute("PRAGMA wal_autocheckpoint=0")
++            c.execute("INSERT INTO moz_places (url, url_hash, guid, rev_host) VALUES ('https://only-in-wal.example.org/', 0, 'walwalwal001', '')")
++            c.execute("INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid) "
++                      "VALUES (1, last_insert_rowid(), 5, 99, 'only in WAL', 1600000000000000, 1600000000000000, 'walwalwal002')")
++            c.commit()
++            self.assertTrue(db.with_name("places.sqlite-wal").stat().st_size > 0)
++            self.assertNotIn("only in WAL", [b.title for b in sqlite_without_wal(db, self.tmp)])
++            self.assertIn("only in WAL", [b.title for b in browsers.load("firefox", profile=str(db))])
++        finally:
++            c.close()
++
++    def test_copy_retries_when_the_browser_checkpoints_mid_copy_and_refuses_when_it_never_settles(self):
++        db = fixture_db(self.tmp / "places.sqlite")
++        real = browsers._fingerprint
++        calls = {"n": 0}
++
++        def flaky(path):
++            calls["n"] += 1
++            fp = real(path)
++            return (fp[0] + (calls["n"] == 2), *fp[1:])     # the check right after the first copy sees the file move
++
++        with mock.patch.object(browsers, "_fingerprint", flaky), mock.patch.object(time, "sleep"):
++            self.assertEqual(flat(browsers.load("firefox", profile=str(db))), want())
++            self.assertEqual(calls["n"], 4)                      # copy 1 rejected, copy 2 accepted
++        always = iter(range(10**6))
++        with mock.patch.object(browsers, "_fingerprint", lambda p: (next(always), 0, b"")), mock.patch.object(time, "sleep"):
++            with self.assertRaisesRegex(formats.FormatError, "kept changing"):
++                browsers.load("firefox", profile=str(db))
++
++    def test_checkpoint_between_the_db_copy_and_the_wal_copy_is_survived(self):
++        """The real race: the browser checkpoints and truncates its WAL right after we copied the db.  db(old) + wal(new) is a
++        malformed database; the copy must notice, retry and hand back a consistent pair."""
++        db = self.tmp / "live" / "places.sqlite"
++        db.parent.mkdir()
++        live = sqlite3.connect(db)
++        self.addCleanup(live.close)
++        for pragma in ("page_size=1024", "journal_mode=WAL", "wal_autocheckpoint=0"):
++            live.execute("PRAGMA " + pragma)
++        live.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)")
++        live.execute("CREATE INDEX tv ON t(v)")
++
++        def add(lo, hi):
++            live.executemany("INSERT INTO t(v) VALUES (?)", [(f"row-{i:05d}-" + "x" * 80,) for i in range(lo, hi)])
++            live.commit()
++
++        add(0, 1500)
++        live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
++        add(1500, 3000)
++        real, hits = shutil.copy2, []
++
++        def racing(src, dst, *a, **k):
++            out = real(src, dst, *a, **k)
++            if str(src).endswith("places.sqlite") and not hits:
++                hits.append(1)
++                live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
++                add(3000, 3600)
++            return out
++
++        with mock.patch.object(shutil, "copy2", racing), mock.patch.object(time, "sleep"):
++            dest = browsers._copy(db)
++        self.addCleanup(shutil.rmtree, dest.parent, True)
++        c = sqlite3.connect(f"file:{dest}?mode=ro", uri=True)
++        try:
++            self.assertEqual(c.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
++            self.assertEqual(c.execute("SELECT count(*) FROM t").fetchone()[0], 3600)
++        finally:
++            c.close()
++
++    def test_temp_dir_with_uri_special_characters(self):
++        db = fixture_db(self.tmp / "places.sqlite")
++        for odd in ("with#hash", "with%41pct"):
++            base = self.tmp / odd
++            base.mkdir()
++            with mock.patch.object(tempfile, "tempdir", str(base)):
++                self.assertEqual(len(browsers.load("firefox", profile=str(db))), len(EXPECTED["bookmarks"]))
++
++    def test_unreadable_databases_give_a_format_error(self):
++        junk = self.tmp / "junk" / "places.sqlite"
++        junk.parent.mkdir()
++        junk.write_bytes(b"this is not a database, just text")
++        trunc = self.tmp / "trunc" / "places.sqlite"
++        trunc.parent.mkdir()
++        trunc.write_bytes(fixture_db(self.tmp / "full.sqlite").read_bytes()[:70000])
++        for bad in (junk, trunc):
++            with self.assertRaisesRegex(formats.FormatError, "not a readable Firefox places.sqlite"):
++                browsers.load("firefox", profile=str(bad))
++
++    def test_profile_folder_and_renamed_files_are_accepted(self):
++        prof = self.tmp / "abcd.default-release"
++        fixture_db(prof / "places.sqlite")
++        self.assertEqual(flat(browsers.load("firefox", profile=str(prof))), want())
++        shutil.copy(prof / "places.sqlite", self.tmp / "places-copy.bak")        # sniffed by its SQLite header
++        self.assertEqual(flat(browsers.load("/ignored/by/profile", profile=str(self.tmp / "places-copy.bak"))), want())
++        (prof / "places.sqlite").unlink()
++        (prof / "bookmarkbackups").mkdir()
++        shutil.copy(FIX / "bookmarks-firefox157.jsonlz4", prof / "bookmarkbackups" / "bookmarks-2026-10-15_30_x.jsonlz4")
++        self.assertEqual(flat(browsers.load("firefox", profile=str(prof))), want())   # no db: newest backup
++        with self.assertRaises(formats.FormatError):
++            browsers.load("firefox", profile=str(self.tmp / "empty-folder-does-not-exist"))
++
++    def test_firefox_json_backup_by_extension(self):
++        raw = json.dumps({"guid": "root________", "root": "placesRoot", "typeCode": 2, "children": [
++            {"root": "unfiledBookmarksFolder", "typeCode": 2, "title": "unfiled", "children": [
++                {"typeCode": 1, "uri": "https://j.example.org/", "title": "J", "dateAdded": 1600000000000000}]}]})
++        p = self.tmp / "bookmarks-2026-01-01.json"
++        p.write_text(raw, encoding="utf-8")
++        got = browsers.load("firefox", profile=str(p))
++        self.assertEqual([(b.url, b.folder, b.added) for b in got], [("https://j.example.org/", "Other bookmarks", 1600000000)])
++
++
++def sqlite_without_wal(db: Path, scratch: Path) -> formats.ParsedList:
++    """What an exporter that copies only places.sqlite (ignoring the -wal) would see."""
++    lone = scratch / "lone" / "places.sqlite"
++    lone.parent.mkdir(exist_ok=True)
++    shutil.copy2(db, lone)
++    return browsers.parse_places(lone)
++
++
++class Lz4Hardening(unittest.TestCase):
++    def test_match_copies_overlapping_and_not(self):
++        end = bytes([0])
++        self.assertEqual(browsers.lz4_block_decompress(bytes([0x4F]) + b"abcd" + bytes([4, 0, 1]) + end, 24), b"abcd" * 6)     # offset < length, extended length
++        self.assertEqual(browsers.lz4_block_decompress(bytes([0x36]) + b"abc" + bytes([3, 0]) + end, 13), b"abcabcabcabca")     # remainder of the pattern
++        self.assertEqual(browsers.lz4_block_decompress(bytes([0xA2]) + b"0123456789" + bytes([10, 0]) + end, 16), b"0123456789012345")  # plain copy
++
++    def test_length_bomb_is_refused_before_anything_is_copied(self):
++        """A match length is a run of 0xFF bytes: 200 KB of them claim ~50 MB (5 MB of them ~1.3 GB) while the header says 100 bytes."""
++        bomb = bytes([0x1F]) + b"a" + bytes([1, 0]) + b"\xff" * 200_000 + bytes([0])
++        started = time.monotonic()
++        with self.assertRaisesRegex(formats.FormatError, "output too large"):
++            browsers.lz4_block_decompress(bomb, 100)
++        self.assertLess(time.monotonic() - started, 2.0)
++
++
++class HtmlExportForFirefox(unittest.TestCase):
++    def test_other_bookmarks_is_marked_as_firefoxs_unfiled_root(self):
++        items = [formats.Bookmark(url="https://t.example.org/", title="T", folder="Bookmarks bar"),
++                 formats.Bookmark(url="https://o.example.org/", title="O", folder="Other bookmarks/Sub")]
++        text = formats.write_netscape(items, {"Bookmarks bar", "Other bookmarks", "Other bookmarks/Sub"})
++        self.assertIn('PERSONAL_TOOLBAR_FOLDER="true">Bookmarks bar</H3>', text)
++        self.assertIn('UNFILED_BOOKMARKS_FOLDER="true">Other bookmarks</H3>', text)
++        self.assertEqual(sorted(b.folder for b in formats.parse_netscape(text)), ["Bookmarks bar", "Other bookmarks/Sub"])   # our own reader is unaffected
++
++
++class GeckoDiscovery(unittest.TestCase):
++    """Layouts as real browsers create them; names of profile folders are kept verbatim (spaces, parentheses, random ids)."""
++
++    def setUp(self):
++        self.home = Path(tempfile.mkdtemp())
++        self.addCleanup(shutil.rmtree, self.home, True)
++        self.env = {"XDG_CONFIG_HOME": "", "APPDATA": str(self.home / "AppData/Roaming"), "LOCALAPPDATA": str(self.home / "AppData/Local")}
++
++    def found(self, name="firefox", system="Linux", **env) -> list:
++        with mock.patch.object(Path, "home", return_value=self.home), mock.patch.object(gecko.platform, "system", return_value=system), \
++                mock.patch.dict("os.environ", {**self.env, **env}):
++            return [str(p.relative_to(self.home)).replace("\\", "/") for p in gecko.files(name)]
++
++    def write(self, root: Path, profiles_ini: str = PROFILES_INI, installs_ini: str = INSTALLS_INI, dirs=("wtr793rw.default-release",)):
++        root.mkdir(parents=True, exist_ok=True)
++        if profiles_ini:
++            (root / "profiles.ini").write_text(profiles_ini, encoding="utf-8")
++        if installs_ini:
++            (root / "installs.ini").write_text(installs_ini, encoding="utf-8")
++        for d in dirs:
++            fixture_db(root / d / "places.sqlite", marker=d.split(".")[0])
++
++    def test_fresh_linux_install_uses_the_xdg_folder(self):
++        self.write(self.home / ".config/mozilla/firefox")
++        self.assertEqual(self.found(), [".config/mozilla/firefox/wtr793rw.default-release/places.sqlite"])
++
++    def test_custom_xdg_config_home(self):
++        self.write(self.home / "cfg/mozilla/firefox")
++        self.assertEqual(self.found(XDG_CONFIG_HOME=str(self.home / "cfg")), ["cfg/mozilla/firefox/wtr793rw.default-release/places.sqlite"])
++        self.assertEqual(self.found(XDG_CONFIG_HOME="relative/is/ignored"), [])
++
++    def test_legacy_folder_is_preferred_and_snap_flatpak_are_found(self):
++        self.write(self.home / ".mozilla/firefox")
++        self.write(self.home / ".config/mozilla/firefox")
++        self.write(self.home / "snap/firefox/common/.mozilla/firefox")
++        self.write(self.home / ".var/app/org.mozilla.firefox/.mozilla/firefox")
++        self.write(self.home / ".var/app/org.mozilla.firefox/config/mozilla/firefox")
++        got = self.found()
++        self.assertEqual(len(got), 5)
++        self.assertTrue(got[0].startswith(".mozilla/firefox/"))
++
++    def test_install_default_beats_default_1_and_alphabetical_order(self):
++        """On a modern install `Default=1` marks the unused legacy profile; the [Install...] section is the truth."""
++        ini = PROFILES_INI.replace("wtr793rw.default-release", "zzzz9999.default-release").replace("byprd30h.default", "aaaa0000.default")
++        inst = INSTALLS_INI.replace("wtr793rw.default-release", "zzzz9999.default-release")
++        self.write(self.home / ".mozilla/firefox", ini, inst, dirs=("zzzz9999.default-release", "aaaa0000.default"))
++        got = self.found()
++        self.assertEqual([g.split("/")[2] for g in got], ["zzzz9999.default-release", "aaaa0000.default"])
++        with mock.patch.object(Path, "home", return_value=self.home), mock.patch.object(gecko.platform, "system", return_value="Linux"):
++            self.assertIn("zzzz9999", [b.title for b in browsers.load("firefox")])
++
++    def test_default_1_without_install_section_and_unlisted_profiles(self):
++        ini = "[General]\nVersion=2\n\n[Profile0]\nName=work\nIsRelative=1\nPath=bbbb.work\n\n[Profile1]\nName=default\nIsRelative=1\nPath=cccc.default\nDefault=1\n"
++        self.write(self.home / ".mozilla/firefox", ini, "", dirs=("bbbb.work", "cccc.default", "uOlTrTJv.Profile 1"))
++        self.assertEqual([g.split("/")[2] for g in self.found()], ["cccc.default", "bbbb.work", "uOlTrTJv.Profile 1"])
++
++    def test_absolute_profile_path_outside_the_root(self):
++        elsewhere = self.home / "data" / "my firefox profile"
++        fixture_db(elsewhere / "places.sqlite")
++        ini = f"[Profile0]\nName=custom\nIsRelative=0\nPath={elsewhere}\nDefault=1\n"
++        self.write(self.home / ".mozilla/firefox", ini, "", dirs=())
++        self.assertEqual(self.found(), ["data/my firefox profile/places.sqlite"])
++
++    def test_broken_ini_files_do_not_hide_profiles(self):
++        self.write(self.home / ".mozilla/firefox", "\x00\xff garbage [[[ \n", "no sections here", dirs=("q1.default-release",))
++        (self.home / ".mozilla/firefox/profiles.ini").write_bytes(b"\xff\xfe\x00bad utf-8 \x80\n[x")
++        self.assertEqual(self.found(), [".mozilla/firefox/q1.default-release/places.sqlite"])
++
++    def test_macos_and_windows_layouts(self):
++        ini = PROFILES_INI.replace("Path=wtr793rw", "Path=Profiles/wtr793rw").replace("Default=wtr793rw", "Default=Profiles/wtr793rw")
++        inst = INSTALLS_INI.replace("Default=wtr793rw", "Default=Profiles/wtr793rw")
++        mac = self.home / "Library/Application Support/Firefox"
++        self.write(mac, ini, inst, dirs=("Profiles/wtr793rw.default-release", "Profiles/byprd30h.default"))
++        self.assertEqual(self.found(system="Darwin")[0], "Library/Application Support/Firefox/Profiles/wtr793rw.default-release/places.sqlite")
++        win = self.home / "AppData/Roaming/Mozilla/Firefox"
++        self.write(win, ini, inst, dirs=("Profiles/wtr793rw.default-release", "Profiles/byprd30h.default"))
++        self.assertEqual(self.found(system="Windows")[0], "AppData/Roaming/Mozilla/Firefox/Profiles/wtr793rw.default-release/places.sqlite")
++
++    def test_forks(self):
++        zen = "[Profile0]\nName=Default (release)\nIsRelative=1\nPath=evl81bnf.Default (release)\n\n[InstallD3A8D3B14A701C42]\nDefault=evl81bnf.Default (release)\nLocked=1\n\n" \
++              "[Profile1]\nName=Default Profile\nIsRelative=1\nPath=0e639wnc.Default Profile\nDefault=1\n"
++        self.write(self.home / ".config/zen", zen, "", dirs=("evl81bnf.Default (release)", "0e639wnc.Default Profile"))
++        self.assertEqual(self.found("zen")[0], ".config/zen/evl81bnf.Default (release)/places.sqlite")
++        self.write(self.home / ".config/floorp", PROFILES_INI, INSTALLS_INI)
++        self.assertEqual(self.found("floorp"), [".config/floorp/wtr793rw.default-release/places.sqlite"])
++        self.assertEqual(self.found("librewolf"), [])
++        self.assertEqual(sorted(browsers.GECKO), ["firefox", "floorp", "librewolf", "waterfox", "zen"])
++        self.assertEqual(mcp_server.BROWSER_NAMES, tuple(browsers.ALL))      # MCP offers exactly the names the CLI knows
++
++    def test_newest_backup_of_each_profile_follows_the_databases(self):
++        root = self.home / ".mozilla/firefox"
++        self.write(root)
++        for name in ("bookmarks-2026-01-01_3_a.jsonlz4", "bookmarks-2026-03-09_3_b.jsonlz4"):
++            (root / "wtr793rw.default-release/bookmarkbackups").mkdir(exist_ok=True)
++            (root / "wtr793rw.default-release/bookmarkbackups" / name).write_bytes(b"x")
++        self.assertEqual(self.found(), [".mozilla/firefox/wtr793rw.default-release/places.sqlite",
++                                        ".mozilla/firefox/wtr793rw.default-release/bookmarkbackups/bookmarks-2026-03-09_3_b.jsonlz4"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff -ruN -x '*.gz' -x '*.jsonlz4' -x __pycache__ a/tests/test_real_firefox.py b/tests/test_real_firefox.py
+--- a/tests/test_real_firefox.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_real_firefox.py	2026-10-15 07:35:22.157884416 +0000
+@@ -0,0 +1,113 @@
++"""Optional: reads profiles written by a REAL Gecko process.  Skipped unless MHBM_FIREFOX_DIR names a directory with the `firefox`
++executable (see tests/real_firefox/README.md); CI downloads a pinned Firefox for the job that sets it."""
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++import common
++from mhbm import browsers, formats
++
++HARNESS = Path(__file__).resolve().parent / "real_firefox"
++sys.path.insert(0, str(HARNESS))
++FIREFOX_DIR = os.environ.get("MHBM_FIREFOX_DIR", "")
++EXE = os.environ.get("MHBM_GECKO_EXE", "firefox")
++
++
++def _skip_reason() -> str:
++    if not FIREFOX_DIR:
++        return "MHBM_FIREFOX_DIR not set (no real Gecko binary to drive)"
++    if not (Path(FIREFOX_DIR) / EXE).exists():
++        return f"{Path(FIREFOX_DIR) / EXE} does not exist"
++    if sys.platform != "linux":
++        return "the harness drives a Linux build of the browser"
++    if os.environ.get("MHBM_NO_NETNS") != "1":  # the browser is normally cut off from the network with `unshare -n`
++        if not shutil.which("unshare") or subprocess.run(["unshare", "-n", "true"], capture_output=True).returncode != 0:
++            return "cannot create a network namespace here (set MHBM_NO_NETNS=1 to run the browser on the real network, prefs still disable it)"
++    return ""
++
++
++def run_harness(script: str, *args: str) -> dict:
++    p = subprocess.run([sys.executable, "-I", str(HARNESS / script), *args], capture_output=True, text=True, timeout=240,
++                       env={**os.environ, "MHBM_SCRIPTS": str(Path(common.__file__).resolve().parents[1] / "scripts")})
++    if p.returncode != 0:
++        raise AssertionError(f"{script} failed ({p.returncode}):\n{p.stdout[-1500:]}\n{p.stderr[-1500:]}")
++    return json.loads(p.stdout[p.stdout.index("{"):])
++
++
++@unittest.skipIf(_skip_reason(), _skip_reason())
++class RealGecko(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        import make_netscape
++        cls.tmp = Path(tempfile.mkdtemp(prefix="mhbm-gecko-"))
++        (cls.tmp / "rich.html").write_text(make_netscape.rich(), encoding="utf-8")
++        cls.clean = cls.tmp / "clean"
++        cls.killed = cls.tmp / "killed"
++        cls.report = {
++            "clean": run_harness("build_profile.py", str(cls.clean), str(cls.tmp / "rich.html"), "--extras", "--end", "clean"),
++            "kill": run_harness("build_profile.py", str(cls.killed), str(cls.tmp / "rich.html"), "--extras", "--end", "kill", "--no-backup"),
++        }
++
++    @classmethod
++    def tearDownClass(cls):
++        shutil.rmtree(cls.tmp, ignore_errors=True)
++
++    def _compare(self, profile: Path, sources: str):
++        import compare
++        truth = json.loads(Path(str(profile) + ".truth.json").read_text(encoding="utf-8"))
++        want = sorted(compare.truth_items(truth, include_place_queries=False))
++        for src in sources.split(","):
++            if src == "sqlite":
++                parsed = browsers.load("firefox", profile=str(profile / "places.sqlite"))
++            elif src == "jsonlz4":
++                parsed = browsers.load("firefox", profile=str(sorted((profile / "bookmarkbackups").glob("bookmarks-*.jsonlz4"))[-1]))
++            else:
++                parsed = browsers.load("firefox", profile=str(profile) + ".backup.json")
++            self.assertEqual(sorted(compare.mhbm_items(parsed)), want, src)
++            self.assertEqual(set(parsed.folders), compare.truth_folders(truth), src)
++
++    def test_cleanly_closed_profile_all_three_sources(self):
++        self._compare(self.clean, "sqlite,jsonlz4,json")
++        self.assertEqual(self.report["clean"]["exit"], 0)
++
++    def test_killed_firefox_leaves_a_wal_that_is_still_read(self):
++        files = self.report["kill"]["files"]
++        self.assertGreater(files["places.sqlite-wal"], 0)           # the commits really are only in the WAL
++        self._compare(self.killed, "sqlite")
++
++    def test_profile_folder_argument(self):
++        self.assertEqual(len(browsers.load("firefox", profile=str(self.clean))), len(browsers.load("firefox", profile=str(self.clean / "places.sqlite"))))
++
++    def test_our_html_export_is_imported_faithfully_by_firefox(self):
++        """Write-back direction for Firefox is 'export HTML, import in Firefox': every bookmark must arrive with its URL, title and
++        date, the toolbar folder must become Firefox's toolbar and 'Other bookmarks' its unfiled root."""
++        lib = formats.read_file(Path(common.__file__).resolve().parent / "fixtures" / "messy-library.html")
++        (self.tmp / "export.html").write_text(formats.write_netscape(list(lib), lib.folders), encoding="utf-8")
++        report = run_harness("build_profile.py", str(self.tmp / "exported"), str(self.tmp / "export.html"), "--end", "clean", "--no-backup")
++        self.assertEqual(report["exit"], 0)
++        tree = json.loads((self.tmp / "exported.truth.json").read_text(encoding="utf-8"))["tree"]
++
++        def count(n):
++            return int(n.get("type") == "text/x-moz-place") + sum(count(c) for c in n.get("children", []))
++
++        roots = {c["guid"]: count(c) for c in tree["children"]}
++        on_bar = sum(1 for b in lib if b.folder.split("/")[0] == "Bookmarks bar")
++        self.assertEqual(roots["toolbar_____"], on_bar)
++        self.assertEqual(roots["unfiled_____"], len(lib) - on_bar)
++        self.assertEqual(roots["menu________"], 0)
++
++    def test_reading_while_firefox_is_running(self):
++        probe = run_harness("live_test.py", str(self.clean), str(self.tmp / "live"), "--probe")["phase_A"]
++        self.assertTrue(probe["direct_ro_blocked"], probe)            # why the files are copied: Firefox holds the db exclusively
++        self.assertTrue(probe["live_load_equals_gecko_truth"], probe)
++
++
++if __name__ == "__main__":
++    unittest.main()

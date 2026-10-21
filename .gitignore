@@ -1,0 +1,14 @@
+mh-web-design-skill/
+
+# mh-bookmark-organizer working library
+.mhbm/
+__pycache__/
+build/
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+node_modules/
+dist/

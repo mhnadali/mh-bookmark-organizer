@@ -1,0 +1,380 @@
+name: release
+
+# Publishing mh-bookmark-organizer to PyPI, from a version tag, with no stored secrets (PyPI "trusted publishing", OIDC).
+#
+#   git tag v1.6.0 && git push origin v1.6.0
+#
+#   verify ---> build ---> sdist-tests ---> attest -> publish-testpypi -> verify-testpypi -> publish-pypi -> verify-pypi
+#                  \-----> smoke (matrix) --/                                                    |            \-> github-release
+#                                                                                                 (environment "pypi": a person approves)
+#
+# * verify      the tag, __version__, extension and plugin manifests, README and CHANGELOG agree (tools/release_check.py); the tagged commit is on the default branch
+# * build       one clean job with hash-pinned tools: sdist + wheel, twine check, check-wheel-contents, the release gate
+#               (a licence must exist: the owner chooses it, see RELEASING.md), and a second build elsewhere that must come out byte-identical (SOURCE_DATE_EPOCH)
+# * sdist-tests the whole unit-test suite, run from the unpacked sdist (proves the sdist is complete)
+# * smoke       the built wheel and sdist installed into fresh virtual environments on Linux/macOS/Windows and Python 3.9-3.13
+# * attest      GitHub build-provenance attestation of the files (verify with `gh attestation verify <file> --repo <owner>/<repo>`)
+# * publish-*   the only jobs with `id-token: write` besides attest; each is bound to a GitHub environment that PyPI's trusted publisher names
+#
+# A manual run (Actions > release > Run workflow) does verify/build/sdist-tests/smoke and publishes nothing, unless "testpypi" is ticked:
+# then the files go to TestPyPI only (a rehearsal; do it on the commit you are about to tag so the bytes are identical).
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      testpypi:
+        description: "Also upload to TestPyPI (rehearsal; never to PyPI)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never abandon an upload half way
+
+env:
+  SKILL_DIR: .claude/skills/mh-bookmark-organizer
+  PROJECT: mh-bookmark-organizer
+
+jobs:
+  verify:
+    name: tag, version, changelog agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # the tagged commit must be reachable from the default branch
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Tag, __version__, extension manifest, README and CHANGELOG say the same version
+        id: check
+        working-directory: ${{ env.SKILL_DIR }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="$REF_NAME"
+          else   # a manual run: check the files against the version they declare
+            tag="v$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' scripts/mhbm/__init__.py)"
+          fi
+          python tools/release_check.py "$tag" --notes release-notes.md
+      - name: The tagged commit is on the default branch
+        if: github.event_name == 'push'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH" \
+            || { echo "::error::$GITHUB_SHA is not on $DEFAULT_BRANCH: merge first, then tag"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: ${{ env.SKILL_DIR }}/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: build, check, reproduce
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: .claude/skills/mh-bookmark-organizer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install the build tools (exact versions, exact file hashes)
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-release.txt
+      - name: Build the sdist and the wheel (the wheel is built from the sdist)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python -m build --no-isolation --outdir dist .
+          for f in dist/*.tar.gz; do python tools/normalize_sdist.py "$f"; done
+          ls -l dist
+      - name: The files are what the tag says they are
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          test -f "dist/mh_bookmark_organizer-${VERSION}-py3-none-any.whl" && test -f "dist/mh_bookmark_organizer-${VERSION}.tar.gz" && test "$(ls dist | wc -l)" = 2 \
+            || { echo "::error::dist/ does not hold exactly the sdist and the wheel of version $VERSION"; ls -l dist; exit 1; }
+      - name: twine check (renders the README the way PyPI does), check-wheel-contents, pyproject schema
+        run: |
+          twine check --strict dist/*
+          check-wheel-contents dist/*.whl
+          validate-pyproject pyproject.toml
+      - name: Release gate and packaging tests (a licence file and licence metadata must exist)
+        env:
+          MHBM_RELEASE: "1"
+        run: python -W error::DeprecationWarning -W error::ResourceWarning -m unittest discover -s tests -p "test_packaging.py" -v
+      - name: Build a second time, in another folder with other file times - the bytes must be identical
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          second="$RUNNER_TEMP/second"
+          mkdir "$second"
+          git archive --format=tar "HEAD:$SKILL_DIR" | tar -x -C "$second"
+          find "$second" -exec touch -h -d "@1500000000" {} +
+          (cd "$second" && python -m build --no-isolation --outdir "$second/dist" . && for f in "$second"/dist/*.tar.gz; do python tools/normalize_sdist.py "$f"; done)
+          (cd dist && sha256sum -- * > "$RUNNER_TEMP/first.sha256")
+          (cd "$second/dist" && sha256sum -- * > "$RUNNER_TEMP/second.sha256")
+          cat "$RUNNER_TEMP/first.sha256"
+          diff "$RUNNER_TEMP/first.sha256" "$RUNNER_TEMP/second.sha256" && echo "reproducible: identical bytes"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: .claude/skills/mh-bookmark-organizer/dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  sdist-tests:
+    name: the sdist runs the test suite
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - name: Unpack the sdist somewhere else and run every test in it
+        run: |
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          cd "$RUNNER_TEMP/unpacked"/*/
+          python -W error::DeprecationWarning -W error::ResourceWarning -m unittest discover -s tests -v
+
+  smoke:
+    name: ${{ matrix.kind }}${{ matrix.extra && format('[{0}]', matrix.extra) || '' }} on ${{ matrix.os }}, python ${{ matrix.python }}
+    needs: [verify, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.9", kind: wheel }
+          - { os: ubuntu-latest, python: "3.10", kind: wheel }
+          - { os: ubuntu-latest, python: "3.11", kind: wheel }
+          - { os: ubuntu-latest, python: "3.12", kind: wheel }
+          - { os: ubuntu-latest, python: "3.13", kind: wheel }
+          - { os: ubuntu-latest, python: "3.9", kind: sdist }
+          - { os: ubuntu-latest, python: "3.10", kind: sdist }
+          - { os: ubuntu-latest, python: "3.11", kind: sdist }
+          - { os: ubuntu-latest, python: "3.12", kind: sdist }
+          - { os: ubuntu-latest, python: "3.13", kind: sdist }
+          - { os: ubuntu-latest, python: "3.9", kind: wheel, extra: fast }
+          - { os: ubuntu-latest, python: "3.13", kind: wheel, extra: fast }
+          - { os: macos-latest, python: "3.9", kind: wheel }
+          - { os: macos-latest, python: "3.13", kind: sdist }
+          - { os: windows-latest, python: "3.9", kind: wheel }
+          - { os: windows-latest, python: "3.13", kind: sdist }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # checked out only for tools/smoke_installed.py and the synthetic fixture
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - name: Install into a fresh virtual environment and smoke-test what was installed
+        env:
+          KIND: ${{ matrix.kind }}
+          EXTRA: ${{ matrix.extra }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if [ "$KIND" = wheel ]; then artifact="$(ls "$GITHUB_WORKSPACE"/dist/*.whl)"; else artifact="$(ls "$GITHUB_WORKSPACE"/dist/*.tar.gz)"; fi
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/$SKILL_DIR/tools/smoke_installed.py" "$artifact" \
+            --fixture "$GITHUB_WORKSPACE/$SKILL_DIR/tests/fixtures/messy-library.html" \
+            --expect-version "$VERSION" ${EXTRA:+--extra "$EXTRA"}
+
+  attest:
+    name: build-provenance attestation
+    needs: [build, sdist-tests, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Signs with GitHub's OIDC identity (Sigstore). This job has no `environment`, so a token minted here cannot publish to PyPI:
+      # PyPI's trusted publisher is bound to the `pypi` / `testpypi` environments.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      # Attestations need a public repository (or GitHub Enterprise Cloud). The job still succeeds without them so a private repository can release.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        if: github.event_name == 'push' && !github.event.repository.private
+        with:
+          subject-path: dist/*
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.testpypi)
+    needs: [build, sdist-tests, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/mh-bookmark-organizer/
+    permissions:
+      id-token: write   # the only permission; trusted publishing exchanges this OIDC token for a short-lived upload token
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true   # a rehearsal may already have put this version there
+          attestations: true
+
+  verify-testpypi:
+    name: install from TestPyPI
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.testpypi)
+    needs: [verify, publish-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # checked out only for tools/smoke_installed.py and the synthetic fixture
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - name: Download what the index serves, compare it with what was built, smoke-test it
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if python -m pip download --disable-pip-version-check --no-deps --index-url https://test.pypi.org/simple/ \
+                 --dest "$RUNNER_TEMP/index" "mh-bookmark-organizer==$VERSION"; then break; fi
+            echo "not on the index yet (attempt $attempt)"; sleep 20
+          done
+          test -n "$(ls "$RUNNER_TEMP/index")" || { echo "::error::mh-bookmark-organizer==$VERSION never appeared on TestPyPI"; exit 1; }
+          served="$(ls "$RUNNER_TEMP"/index/*.whl)"
+          if [ "$(sha256sum < "$served")" != "$(sha256sum < "$(ls dist/*.whl)")" ]; then
+            echo "::warning::TestPyPI already had a different file for $VERSION (an earlier rehearsal); not comparing, not smoke-testing it"
+            exit 0
+          fi
+          echo "the wheel on TestPyPI is byte-identical to the one built here"
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/$SKILL_DIR/tools/smoke_installed.py" "$served" --skip-learn --expect-version "$VERSION" \
+            --fixture "$GITHUB_WORKSPACE/$SKILL_DIR/tests/fixtures/messy-library.html"
+
+  publish-pypi:
+    name: publish to PyPI
+    if: github.event_name == 'push'
+    needs: [verify, attest, verify-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:     # configure "Required reviewers" on this environment: a person approves every upload
+      name: pypi
+      url: https://pypi.org/project/mh-bookmark-organizer/${{ needs.verify.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          attestations: true
+
+  verify-pypi:
+    name: install from PyPI
+    needs: [verify, publish-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # checked out only for tools/smoke_installed.py and the synthetic fixture
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - name: What PyPI serves is byte-identical to what was built, and installs
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if python -m pip download --disable-pip-version-check --no-deps --dest "$RUNNER_TEMP/index" "mh-bookmark-organizer==$VERSION"; then break; fi
+            echo "not on the index yet (attempt $attempt)"; sleep 20
+          done
+          served="$(ls "$RUNNER_TEMP"/index/*.whl)"
+          test "$(sha256sum < "$served")" = "$(sha256sum < "$(ls dist/*.whl)")" || { echo "::error::the wheel on PyPI differs from the one built here"; exit 1; }
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/$SKILL_DIR/tools/smoke_installed.py" "$served" --skip-learn --expect-version "$VERSION" \
+            --fixture "$GITHUB_WORKSPACE/$SKILL_DIR/tests/fixtures/messy-library.html"
+
+  github-release:
+    name: GitHub release with the files and their checksums
+    if: github.event_name == 'push'
+    needs: [verify, publish-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # the only job that can create a release
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+          path: notes
+      - name: Create (or update) the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          (cd dist && sha256sum -- * > "$GITHUB_WORKSPACE/SHA256SUMS")
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            flags=(); [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+            gh release create "$TAG" dist/* SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --title "$PROJECT $VERSION" \
+              --notes-file notes/release-notes.md "${flags[@]}"
+          fi

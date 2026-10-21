@@ -1,0 +1,207 @@
+--- a/scripts/mhbm/formats.py
++++ b/scripts/mhbm/formats.py
+@@ -89,14 +89,14 @@
+ # ------------------------------------------------------------------ sniffing
+ def sniff(path: Path) -> str:
+     suffix = path.suffix.lower()
+-    head = path.read_text(encoding="utf-8", errors="replace")[:4096].lstrip()
++    head = path.read_text(encoding="utf-8-sig", errors="replace")[:4096].lstrip()   # utf-8-sig: Chromium accepts a BOM, json.loads does not
+     if suffix in (".html", ".htm") or head[:200].upper().startswith(("<!DOCTYPE NETSCAPE", "<!DOCTYPE HTML")):
+         return "html"
+     if suffix == ".csv":
+         return "csv"
+     if head.startswith(("{", "[")):
+         try:
+-            data = json.loads(path.read_text(encoding="utf-8"))
++            data = json.loads(path.read_text(encoding="utf-8-sig"))
+         except json.JSONDecodeError as e:
+             raise FormatError(f"{path}: invalid JSON ({e})") from e
+         if isinstance(data, dict) and "roots" in data:
+@@ -117,7 +117,7 @@
+ def _read_file(path, fmt: str | None = None) -> ParsedList:
+     path = Path(path)
+     fmt = fmt or sniff(path)
+-    text = path.read_text(encoding="utf-8", errors="replace")
++    text = path.read_text(encoding="utf-8-sig", errors="replace")
+     readers = {
+         "html": parse_netscape,
+         "chrome": lambda t: parse_chrome(json.loads(t)),
+@@ -333,16 +333,60 @@
+ _GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+ 
+ 
++MAX_CHROME_DEPTH = 90  # Chromium discards the WHOLE file at 98 nested folders (JSON parser depth limit); 97 still loads
++_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
++_HOST_REQUIRED = ("http", "https", "ftp", "ws", "wss", "chrome", "chrome-extension", "chrome-untrusted", "devtools")
++
++
++def chrome_url_ok(url) -> bool:
++    """False for url strings Chromium silently drops when it loads a ``Bookmarks`` file (no scheme, empty host, bad port...).
++
++    Observed on Chromium 141 and Brave 155 (tests/realbrowser/urlvalid): a dropped node also leaves the file's checksum wrong
++    on Chromium <= 143, and ``sync`` would later read the missing node as "deleted in the browser". It is a conservative
++    predictor, not a URL parser: it knows the realistic bad inputs (``example.com``, empty, ``http://``, ``http://h:99999``)."""
++    if not isinstance(url, str):
++        return False
++    text = re.sub(r"[\t\r\n]", "", url).strip("".join(map(chr, range(33))))
++    match = _URL_SCHEME.match(text)
++    if not match:
++        return False
++    if match.group(0)[:-1].lower() not in _HOST_REQUIRED:
++        return True
++    authority = re.split(r"[/?#]", text[match.end():].replace("\\", "/").lstrip("/"), maxsplit=1)[0]
++    hostport = authority.rpartition("@")[2]
++    if authority.endswith("@") or not hostport:
++        return False
++    return _host_port_ok(hostport)
++
++
++def _host_port_ok(hostport: str) -> bool:
++    if hostport.startswith("["):
++        host, closed, rest = hostport[1:].partition("]")
++        port = rest[1:] if rest.startswith(":") else rest
++        if not closed or not re.fullmatch(r"[0-9A-Fa-f:.]+", host):
++            return False
++    else:
++        host, _, port = hostport.partition(":")
++    if (port and (not port.isdigit() or int(port) > 65535)) or not host:
++        return False
++    if re.search(r"[<>^|]", host) or re.search(r"%(?![0-9A-Fa-f]{2})", host):
++        return False
++    if re.fullmatch(r"(?=.*[0-9])[0-9.]+", host):   # an all-numeric dotted host has to be a valid (legacy) IPv4 address
++        parts = host.rstrip(".").split(".")
++        return len(parts) <= 4 and all(parts) and not (len(parts) == 4 and any(int(p) > 255 for p in parts))
++    return True
++
++
+ def chrome_checksum(roots: dict) -> str:
+     """MD5 over id, name (UTF-16LE), type and url of every node in Chromium's encoding order (lower-case hex)."""
+     md5 = hashlib.md5()
+ 
+     def walk(node):
+-        md5.update(str(node["id"]).encode("utf-8"))
+-        md5.update(node.get("name", "").encode("utf-16-le"))
++        md5.update(str(node.get("id", "")).encode("utf-8"))   # a missing id is reported by verify_chrome, not a crash here
++        md5.update(str(node.get("name", "")).encode("utf-16-le", "surrogatepass"))
+         if node.get("type") == "url":
+             md5.update(b"url")
+-            md5.update(node.get("url", "").encode("utf-8"))
++            md5.update(str(node.get("url", "")).encode("utf-8", "surrogatepass"))
+         else:
+             md5.update(b"folder")
+             for child in node.get("children", []):
+@@ -354,11 +398,14 @@
+     return md5.hexdigest()
+ 
+ 
+-def write_chrome(bms, folders=(), folder_meta=None) -> str:
++def write_chrome(bms, folders=(), folder_meta=None, skipped=None) -> str:
+     """A Chromium-family ``Bookmarks`` file: ids, GUIDs and checksum included.
+ 
+-    Implemented from Chromium's documented format and checksum algorithm; verify with ``verify-chrome`` and keep the
+-    original file (``install-chrome`` backs it up). Not yet confirmed against every browser build.
++    Checked against real browsers (Chromium 141, Brave 155, ungoogled-chromium 155): ids, GUIDs, order, titles, URLs and dates
++    arrive unchanged and the file passes ``verify-chrome`` again after the browser rewrites it (tests/realbrowser).
++    Bookmarks whose URL Chromium would silently drop (see ``chrome_url_ok``) are left out and appended to ``skipped`` (a list)
++    when one is given, so that the checksum stays valid and the caller can tell the user. Keep the original file
++    (``install-chrome`` backs it up).
+     """
+     folder_meta = folder_meta or {}
+     counter = iter(range(1, 10**9))
+@@ -383,6 +430,8 @@
+         root_key = names.get(parts[0]) if parts else None
+         node = roots[root_key or "other"]
+         walked = parts[:1] if root_key else []
++        if len(parts) - (1 if root_key else 0) > MAX_CHROME_DEPTH:
++            raise FormatError(f"folder nested more than {MAX_CHROME_DEPTH} levels deep ({path[:60]!r}...): Chromium would discard the whole file")
+         for part in (parts[1:] if root_key else parts):
+             walked.append(part)
+             name = unesc_name(part)
+@@ -396,6 +445,10 @@
+     for f in sorted(folders):
+         locate(f)
+     for b in bms:
++        if not chrome_url_ok(b.url):
++            if skipped is not None:
++                skipped.append(b)
++            continue
+         nid = str(next(counter))
+         locate(b.folder)["children"].append({
+             "id": nid, "name": b.title, "type": "url", "url": b.url, "date_added": stamp(b.added),
+@@ -411,26 +464,40 @@
+         self.ids: set = set()
+         self.guids: set = set()
+ 
+-    def walk(self, node, where) -> None:
++    def walk(self, node, where, depth=0) -> None:
+         self._required(node, where)
+         self._identity(node, where)
+         kind = node.get("type")
+         if kind == "url":
+-            if not str(node.get("url", "")).strip():
+-                self.problems.append(f"{where}: url node without url")
++            self._url(node, where)
+         elif kind == "folder":
++            if depth >= MAX_CHROME_DEPTH:
++                self.problems.append(f"{where}: folders nested more than {MAX_CHROME_DEPTH} deep (Chromium discards the whole file at 98)")
++                return
+             for i, child in enumerate(node.get("children", [])):
+-                self.walk(child, f"{where}/{child.get('name', i)}")
++                self.walk(child, f"{where}/{child.get('name', i)}", depth + 1)
+         else:
+             self.problems.append(f"{where}: unknown type {kind!r}")
+ 
++    def _url(self, node, where) -> None:
++        url = node.get("url", "")
++        if not str(url).strip():
++            self.problems.append(f"{where}: url node without url")
++        elif not chrome_url_ok(url):
++            self.problems.append(f"{where}: url {str(url)[:60]!r} is one Chromium silently drops when it loads the file")
++
+     def _required(self, node, where) -> None:
+         for field in ("id", "name", "type"):
+             if field not in node:
+                 self.problems.append(f"{where}: missing '{field}'")
++        if not isinstance(node.get("name", ""), str):
++            self.problems.append(f"{where}: 'name' is not a string")
+ 
+     def _identity(self, node, where) -> None:
+-        nid = str(node.get("id", ""))
++        raw = node.get("id", "")
++        nid = str(raw)
++        if "id" in node and not (isinstance(raw, str) and raw.isascii() and raw.isdigit() and int(raw) > 0):
++            self.problems.append(f"{where}: id {raw!r} is not a positive integer string (Chromium renumbers)")
+         if nid in self.ids:
+             self.problems.append(f"{where}: duplicate id {nid}")
+         self.ids.add(nid)
+@@ -445,20 +512,27 @@
+ 
+ 
+ def verify_chrome(data: dict) -> list:
+-    """Structural problems in a Chromium ``Bookmarks`` document (an empty list means it looks valid)."""
++    """Structural problems in a Chromium ``Bookmarks`` document (an empty list means it looks valid).
++
++    What each problem costs was measured on real browsers: a wrong ``version`` or a missing root makes Chromium discard the
++    whole file; a node it cannot parse (bad URL, unknown type) is dropped; a wrong checksum, a duplicate or non-numeric id
++    makes Chromium <= 143 renumber every id (144 and later ignore the checksum and fix only the offending id)."""
+     roots = data.get("roots")
+     if not isinstance(roots, dict):
+         return ["missing 'roots'"]
+     check = _ChromeCheck()
++    if data.get("version") != 1:
++        check.problems.append(f"version is {data.get('version')!r}, Chromium only loads 1 (it discards the whole file otherwise)")
+     check.problems.extend(f"missing root '{key}'" for key in CHROME_ROOTS if key not in roots)
+     for key, node in roots.items():
+         if isinstance(node, dict):
+             check.walk(node, key)
+     stored = data.get("checksum")
+     if stored is None:
+-        check.problems.append("no checksum (Chromium will recompute it)")
++        check.problems.append("no checksum (Chromium <= 143 renumbers every id; newer builds ignore it)")
+     elif stored != chrome_checksum(roots):
+-        check.problems.append(f"checksum mismatch: file says {stored}, content gives {chrome_checksum(roots)}")
++        check.problems.append(f"checksum mismatch: file says {stored}, content gives {chrome_checksum(roots)} "
++                              "(Chromium <= 143 renumbers every id)")
+     return check.problems
+ 
+ 

@@ -1,0 +1,24 @@
+{
+  "name": "mhnadali-skills",
+  "owner": {
+    "name": "mhnadali"
+  },
+  "description": "Skills, agents and MCP servers by mhnadali.",
+  "plugins": [
+    {
+      "name": "mh-bookmark-organizer",
+      "source": "./.claude/skills/mh-bookmark-organizer",
+      "description": "Organize, dedupe, link-check, archive, tag and search browser bookmarks: a skill, a subagent and an MCP server over a local engine that needs nothing but Python 3.9+.",
+      "category": "productivity",
+      "tags": [
+        "bookmarks",
+        "chrome",
+        "firefox",
+        "dedupe",
+        "link-checker",
+        "mcp"
+      ],
+      "defaultEnabled": true
+    }
+  ]
+}

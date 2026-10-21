@@ -1,0 +1,7 @@
+{
+  "name": "mhbm-realbrowser-tests",
+  "private": true,
+  "description": "Drives a real Chromium-family browser for tests/test_realbrowser.py. Only playwright-core is needed (the browser comes from CHROMIUM_BIN, a system install, or `npx playwright-core install chromium`).",
+  "engines": { "node": ">=20" },
+  "dependencies": { "playwright-core": "1.56.1" }
+}

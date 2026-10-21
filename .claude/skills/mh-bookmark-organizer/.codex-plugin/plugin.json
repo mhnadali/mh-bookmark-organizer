@@ -1,0 +1,26 @@
+{
+  "name": "mh-bookmark-organizer",
+  "version": "1.5.2",
+  "description": "Organize, dedupe, link-check, archive, tag and search browser bookmarks: a skill and an MCP server over a local engine that needs nothing but Python 3.9+.",
+  "author": {
+    "name": "mhnadali"
+  },
+  "homepage": "https://github.com/mhnadali/mh-bookmark-organizer",
+  "repository": "https://github.com/mhnadali/mh-bookmark-organizer",
+  "keywords": ["bookmarks", "chrome", "firefox", "dedupe", "link-checker", "archive", "mcp"],
+  "skills": "./codex/skills/",
+  "mcpServers": "./.codex-mcp.json",
+  "interface": {
+    "displayName": "MH Bookmark Organizer",
+    "shortDescription": "Tidy, dedupe, tag and search your bookmarks",
+    "longDescription": "Imports bookmarks from Chrome, Brave, Edge, Firefox, Safari and common export formats into a private local library, then finds duplicates and dead links, files and tags bookmarks, restructures the folder tree and exports back. Every change is proposed as a plan first, applied only after you approve it, and can be undone.",
+    "developerName": "mhnadali",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteUrl": "https://github.com/mhnadali/mh-bookmark-organizer",
+    "defaultPrompt": [
+      "Use $mh-bookmark-organizer to show a health report for my bookmarks export and propose a cleanup plan.",
+      "Use $mh-bookmark-organizer to file my unfiled bookmarks into folders learned from my own."
+    ]
+  }
+}

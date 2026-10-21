@@ -1,0 +1,21 @@
+# E1 import the profile into the library: 0
+# E2 same-second collision: backups= ['Bookmarks.mhbm-backup-20260101-000000'] | backup still holds the ORIGINAL file: True | backup holds output of 1st run: True
+# E3 disk-full mid-write -> EXC OSError: [Errno 28] No space left on device | target is now valid JSON: False (JSONDecodeError)
+     (the exception is not turned into an 'error:' message either: cli.main only catches FormatError/FileNotFoundError/JSONDecodeError/ValueError)
+# E4 write_remote through a symlink: still a symlink: False | real file untouched (old mtime/owner): 1000 0o600 | link replaced by regular file owner/mode: 0 0o644
+# E5 write_remote on a 0600 file owned by uid 1000, run as root: new file uid/mode = 0 0o644 | backup uid/mode = 0 0o600  (browser user would no longer own its Bookmarks file)
+# E6 install-chrome (in-place truncate) keeps owner/mode: 1000 0o600 | but backup is owned by 0
+# E7 (sync backup name has the same second-resolution scheme as install-chrome; see E2)
+# E8 parse_places in dir 'a b': ['https://a.example/']
+# E8 parse_places in dir 'a#b': OperationalError: no such table: moz_bookmarks
+# E8 parse_places in dir 'a%b': ['https://a.example/']
+# E8 parse_places in dir 'a?b': OperationalError: no such table: moz_bookmarks
+# E8 parse_places in dir 'persian-محمد': ['https://a.example/']
+# E9 plistlib date type: datetime tzinfo= None
+     TZ=UTC                  parse_safari added = 1704110400 (correct UTC value: 1704110400 )
+     TZ=America/Los_Angeles  parse_safari added = 1704139200 (correct UTC value: 1704110400 )
+     TZ=Asia/Tehran          parse_safari added = 1704097800 (correct UTC value: 1704110400 )
+# E10 import-browser chrome --profile 'Profile 1' -> 2 error: Profile 1 is not a file
+# E11 corrupt places.sqlite -> EXC DatabaseError: file is not a database
+# E11b unreadable file (root bypasses chmod, so simulate PermissionError): EXC PermissionError: [Errno 13] Permission denied
+# E12 sync accepts Bookmarks.bak (a file Chrome never reads at load): 0 (0 = accepted)

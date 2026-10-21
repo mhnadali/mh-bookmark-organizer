@@ -1,0 +1,4 @@
+.claude/skills/mh-bookmark-organizer/tests/fixtures/* text eol=lf
+*.sh text eol=lf
+docs/phase3/real-firefox/fixtures/firefox/*.gz binary
+docs/phase3/real-firefox/fixtures/firefox/*.jsonlz4 binary

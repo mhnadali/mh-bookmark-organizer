@@ -1,0 +1,14 @@
+{
+  "name": "adding-skills",
+  "owner": {
+    "name": "mhnadali"
+  },
+  "plugins": [
+    {
+      "name": "mh-bookmark-organizer",
+      "source": "./",
+      "description": "Bookmark organizer"
+    }
+  ],
+  "description": "Skills and agents by mhnadali"
+}

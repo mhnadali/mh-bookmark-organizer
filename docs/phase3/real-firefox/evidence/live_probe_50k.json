@@ -1,0 +1,17 @@
+{
+ "phase_A": {
+  "files": {
+   ".parentlock": 0,
+   "lock": 16,
+   "places.sqlite": 26214400,
+   "places.sqlite-wal": 32824
+  },
+  "lock_target": "127.0.0.1:+25745",
+  "direct_ro": "OperationalError: database is locked",
+  "direct_immutable": "opened; bookmarks=51818",
+  "direct_ro_user_version": "OperationalError: database is locked",
+  "mhbm_load_live": "49580 bookmarks in 1701 ms",
+  "live_load_equals_gecko_truth": true,
+  "direct_ro_blocked": true
+ }
+}

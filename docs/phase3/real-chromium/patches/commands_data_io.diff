@@ -1,0 +1,75 @@
+--- a/scripts/mhbm/commands/data_io.py
++++ b/scripts/mhbm/commands/data_io.py
+@@ -113,7 +113,17 @@
+         sys.stdout.write(text)
+ 
+ 
++def _refuse_if_running(target: Path) -> None:
++    from ..sync import browser_running
++
++    if browser_running(target):
++        sys.exit(f"the browser is running on this profile (see {target.parent.name}/../SingletonLock): close it completely first. "
++                 "A running browser overwrites this file the next time it saves, and the library would then believe the write happened.")
++
++
+ def cmd_install_chrome(args, S):
++    from ..sync import write_text_atomic
++
+     lib, o = _lib(args), Out(args)
+     target = Path(args.profile_file)
+     if target.name != "Bookmarks" or not target.is_file():
+@@ -121,18 +131,33 @@
+     if not args.confirm_chrome_closed:
+         sys.exit("Close the browser completely (check Task Manager), then re-run with --confirm-chrome-closed. "
+                  "The browser overwrites this file on exit and Sync may restore old data.")
++    _refuse_if_running(target)
++    bms = sorted(lib.all(snippet=0), key=lambda b: (b.folder.lower(), (b.title or b.url).lower()))
++    skipped: list = []
++    try:
++        text = formats.write_chrome(bms, lib.folders(), lib.folder_meta(), skipped)
++    except formats.FormatError as e:
++        sys.exit(str(e))
++    problems = [p for p in formats.verify_chrome(json.loads(text)) if not p.startswith("no checksum")]
++    if problems:
++        sys.exit("refusing to write a file that fails verify-chrome: " + "; ".join(problems[:3]))
+     backup = target.with_name(f"Bookmarks.mhbm-backup-{time.strftime('%Y%m%d-%H%M%S')}")
+     shutil.copy2(target, backup)
+-    bms = sorted(lib.all(snippet=0), key=lambda b: (b.folder.lower(), (b.title or b.url).lower()))
+-    target.write_text(formats.render(bms, "chrome", lib.folders(), folder_meta=lib.folder_meta()), encoding="utf-8")
+-    o.say(f"wrote {len(bms)} bookmarks to {target}\noriginal saved to {backup}")
+-    o.set(written=len(bms), backup=str(backup))
++    write_text_atomic(target, text)
++    o.say(f"wrote {len(bms) - len(skipped)} bookmarks to {target}\noriginal saved to {backup}")
++    o.say("note: bookmarks are written in alphabetical order (the library does not keep the browser's order); "
++          "`sync` patches the file in place and keeps it")
++    if skipped:
++        o.say(f"left out {len(skipped)} bookmark(s) the browser would silently discard (no scheme, empty host...):")
++        for b in skipped[:10]:
++            o.say(f"  [{b.folder or 'unfiled'}] {b.url[:70]!r}")
++    o.set(written=len(bms) - len(skipped), backup=str(backup), not_written=[b.url for b in skipped])
+     o.finish()
+ 
+ 
+ def cmd_verify_chrome(args, S):
+     o = Out(args)
+-    data = json.loads(Path(args.file).read_text(encoding="utf-8"))
++    data = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
+     problems = formats.verify_chrome(data)
+     o.set(file=args.file, ok=not [p for p in problems if not p.startswith("no checksum")], problems=problems)
+     if problems:
+@@ -170,11 +195,15 @@
+         o.say(f"  + browser  [{b.folder}] {b.title[:50]}")
+     for b in plan.delete_local[:args.show]:
+         o.say(f"  - library  [{b.folder}] {b.title[:50]}")
++    for b in plan.unsyncable[:args.show]:
++        o.say(f"  ! kept in the library only (the browser would silently drop this URL): {b.url[:60]!r}")
+     if not args.apply:
+         o.say("dry run; add --apply (and --confirm-chrome-closed when the browser file changes)")
+         return o.finish()
+     if plan.remote_changes and not args.confirm_chrome_closed:
+         sys.exit("the browser file would change: close the browser completely, then re-run with --confirm-chrome-closed")
++    if plan.remote_changes:
++        _refuse_if_running(target)
+     o.say("snapshot:", lib.snapshot("pre-sync"))
+     with lib.op("sync"):
+         from ..model import assign_ids

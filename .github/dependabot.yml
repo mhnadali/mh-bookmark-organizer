@@ -1,0 +1,22 @@
+# Keeps the pinned GitHub Actions (full commit SHAs) and the pinned development tools current.
+# The library itself has no runtime dependencies, so there is nothing to update for it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+  - package-ecosystem: pip
+    directory: /.claude/skills/mh-bookmark-organizer
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore"

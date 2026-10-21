@@ -1,0 +1,29 @@
+--- sqlite: read 30 bookmarks, truth 30; missing 1, unexpected 1
+    MISSING (in Gecko, not read): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1600000000')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1588355526400')
+--- jsonlz4: read 32 bookmarks, truth 30; missing 4, unexpected 6
+    MISSING (in Gecko, not read): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1600000000')
+    MISSING (in Gecko, not read): ('Other bookmarks', 'https://unfiled.example.org/one', 'Unfiled one', '()', '1600000200')
+    MISSING (in Gecko, not read): ('Other bookmarks/Folder with trailing space ', 'https://unfiled.example.org/two', 'Unfiled two', "('mixed-case', 'upper')", '1600000201')
+    MISSING (in Gecko, not read): ('Other bookmarks', 'https://api.example.org/tagged', 'API tagged', "('api-tag', 'zeta', 'تگب')", '1792047167')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu/Odd schemes', 'place:type=6&sort=14&maxResults=10', 'A smart bookmark (place: query)', '()', '1600000045')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1588355526400')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu', 'place:parent=toolbar_____&queryType=1', 'Query on toolbar', '()', '1792047167')
+    UNEXPECTED (read, not in Gecko): ('unfiled', 'https://unfiled.example.org/one', 'Unfiled one', '()', '1600000200')
+    UNEXPECTED (read, not in Gecko): ('unfiled/Folder with trailing space ', 'https://unfiled.example.org/two', 'Unfiled two', "('mixed-case', 'upper')", '1600000201')
+    UNEXPECTED (read, not in Gecko): ('unfiled', 'https://api.example.org/tagged', 'API tagged', "('api-tag', 'zeta', 'تگب')", '1792047167')
+    folders missing 3: ['Other bookmarks', 'Other bookmarks/Empty folder', 'Other bookmarks/Folder with trailing space ']
+    folders unexpected 3: ['unfiled', 'unfiled/Empty folder', 'unfiled/Folder with trailing space ']
+--- json: read 32 bookmarks, truth 30; missing 4, unexpected 6
+    MISSING (in Gecko, not read): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1600000000')
+    MISSING (in Gecko, not read): ('Other bookmarks', 'https://unfiled.example.org/one', 'Unfiled one', '()', '1600000200')
+    MISSING (in Gecko, not read): ('Other bookmarks/Folder with trailing space ', 'https://unfiled.example.org/two', 'Unfiled two', "('mixed-case', 'upper')", '1600000201')
+    MISSING (in Gecko, not read): ('Other bookmarks', 'https://api.example.org/tagged', 'API tagged', "('api-tag', 'zeta', 'تگب')", '1792047167')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu/Odd schemes', 'place:type=6&sort=14&maxResults=10', 'A smart bookmark (place: query)', '()', '1600000045')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu/Dates', 'https://dates.example.org/ms', 'ADD_DATE in milliseconds', '()', '1588355526400')
+    UNEXPECTED (read, not in Gecko): ('Bookmarks menu', 'place:parent=toolbar_____&queryType=1', 'Query on toolbar', '()', '1792047167')
+    UNEXPECTED (read, not in Gecko): ('unfiled', 'https://unfiled.example.org/one', 'Unfiled one', '()', '1600000200')
+    UNEXPECTED (read, not in Gecko): ('unfiled/Folder with trailing space ', 'https://unfiled.example.org/two', 'Unfiled two', "('mixed-case', 'upper')", '1600000201')
+    UNEXPECTED (read, not in Gecko): ('unfiled', 'https://api.example.org/tagged', 'API tagged', "('api-tag', 'zeta', 'تگب')", '1792047167')
+    folders missing 3: ['Other bookmarks', 'Other bookmarks/Empty folder', 'Other bookmarks/Folder with trailing space ']
+    folders unexpected 3: ['unfiled', 'unfiled/Empty folder', 'unfiled/Folder with trailing space ']

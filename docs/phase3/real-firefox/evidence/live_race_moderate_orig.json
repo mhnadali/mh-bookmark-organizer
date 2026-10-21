@@ -1,0 +1,52 @@
+{
+ "phase_A": {
+  "files": {
+   ".parentlock": 0,
+   "lock": 16,
+   "places.sqlite": 5242880,
+   "places.sqlite-wal": 2459432
+  },
+  "lock_target": "127.0.0.1:+16556",
+  "direct_ro": "OperationalError: database is locked",
+  "direct_immutable": "opened; bookmarks=416",
+  "direct_ro_user_version": "OperationalError: database is locked",
+  "mhbm_load_live": "365 bookmarks in 20 ms"
+ },
+ "phase_B": [
+  {
+   "variant": "baseline",
+   "copies": 120,
+   "ok": 119,
+   "bad": 1,
+   "details": {
+    "integrity_check: row 364 missing from index moz_places_altfrecencyindex; row 364 missing from index moz_places_originidindex": 1
+   },
+   "copy_stats": {
+    "copies": 120,
+    "changed": 66,
+    "wal_reset": 46,
+    "db_changed": 36
+   }
+  },
+  {
+   "variant": "shipped",
+   "copies": 120,
+   "ok": 116,
+   "bad": 4,
+   "details": {
+    "integrity_check: row 546 missing from index moz_places_altfrecencyindex; row 546 missing from index moz_places_originidindex": 1,
+    "integrity_check: row 624 missing from index moz_bookmarks_guid_uniqueindex; row 624 missing from index moz_bookmarks_dateaddedindex": 1,
+    "integrity_check: row 629 missing from index moz_places_visitcount; row 629 missing from index moz_places_hostindex": 1,
+    "integrity_check: row 646 missing from index moz_places_visitcount; row 646 missing from index moz_places_hostindex": 1
+   },
+   "copy_stats": null
+  }
+ ],
+ "writer": {
+  "inserted": 339,
+  "ckpts": 39,
+  "errors": [
+   "ckpt Error: Error(s) encountered during statement execution: database table is locked"
+  ]
+ }
+}

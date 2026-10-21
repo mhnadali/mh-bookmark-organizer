@@ -1,0 +1,15 @@
+S1 Linux XDG_CONFIG_HOME=<home>/xdg with google-chrome/Default/Bookmarks -> {}
+S2 Linux channel dirs (chrome beta/dev, edge beta, brave nightly, opera beta, vivaldi snapshot) -> {}
+S3 flatpak/snap -> {'chromium': ['snap/chromium/common/chromium/Default/Bookmarks']}
+S4a Chrome w/o Default, with Guest/System/Profile 1,2,10 (order; found[0] is what import-browser uses) -> {'chrome': ['.config/google-chrome/Guest Profile/Bookmarks', '.config/google-chrome/Profile 1/Bookmarks', '.config/google-chrome/Profile 10/Bookmarks', '.config/google-chrome/Profile 2/Bookmarks', '.config/google-chrome/System Profile/Bookmarks']}
+S4b profile holding only AccountBookmarks -> {}
+    load('chrome') -> no chrome profile found on this machine
+S4c profile holding only EncryptedBookmarks2 -> {}
+S4d Bookmarks + AccountBookmarks + EncryptedBookmarks2 -> {'chrome': ['.config/google-chrome/Default/Bookmarks']} (AccountBookmarks content is never read)
+S5 macOS (Chrome stable+beta+canary, Opera GX, Arc, Edge Beta, Yandex, Brave Beta) -> {'chrome': ['Library/Application Support/Google/Chrome/Default/Bookmarks']}
+S6a Windows, env vars unset (fallback to home/AppData) -> {'chrome': ['AppData/Local/Google/Chrome/User Data/Profile 3/Bookmarks']}
+S6b Windows with LOCALAPPDATA redirected -> {'chrome': ['Redirected/Local/Google/Chrome/User Data/Default/Bookmarks']}
+S7 WSL (Windows Chrome under <mnt>/c/Users/alice/...) -> {}
+S8 Firefox: profiles.ini says default-release (abcd1234) is the default -> {'firefox': ['.mozilla/firefox/0zzz.dev-edition-default/places.sqlite', '.mozilla/firefox/abcd1234.default-release/places.sqlite', '.mozilla/firefox/wxyz.default/places.sqlite']}
+    import-browser firefox imports: ['https://0zzz.example/'] (found[0] = alphabetical, not the default profile)
+S8b Firefox profile at absolute path from profiles.ini -> {}

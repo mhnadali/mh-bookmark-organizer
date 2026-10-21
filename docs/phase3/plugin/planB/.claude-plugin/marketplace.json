@@ -1,0 +1,2 @@
+{ "name": "adding-skills", "description": "Skills and agents by mhnadali", "owner": { "name": "mhnadali" },
+  "plugins": [ { "name": "mh-bookmark-organizer", "source": "./plugins/mh-bookmark-organizer", "description": "Bookmark organizer" } ] }

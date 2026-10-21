@@ -1,0 +1,6 @@
+### tree orig (__version__ = "1.5.1")
+bm_import_file     -> REFUSED: 'path is outside the allowed directories (/tmp/claude-0/-home-user-adding-skills/e94ea44a-2'
+bm_import_browser  -> IMPORTED: '{\n  "source": "/tmp/claude-0/-home-user-adding-skills/e94ea44a-2022-55bc-9ae0-034b4c065efe'
+### tree orig2 (__version__ = "1.5.2")
+bm_import_file     -> REFUSED: 'path is outside the allowed directories (/tmp/claude-0/-home-user-adding-skills/e94ea44a-2'
+bm_import_browser  -> REFUSED: 'invalid arguments: name must be one of chrome, chromium, brave, edge, vivaldi, opera, fire'

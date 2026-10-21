@@ -1,0 +1,1 @@
+.config/floorp/t7pbp1ba.default-default/places.sqlite

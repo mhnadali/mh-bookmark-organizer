@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "categories": [
+    {"folder": "Dev/Code Hosting", "tags": ["dev", "git"], "domains": ["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"], "keywords": ["repository", "pull request"]},
+    {"folder": "Dev/Q&A", "tags": ["dev", "qa"], "domains": ["stackoverflow.com", "stackexchange.com", "superuser.com", "serverfault.com"], "keywords": []},
+    {"folder": "Dev/Docs", "tags": ["dev", "docs"], "domains": ["developer.mozilla.org", "docs.python.org", "readthedocs.io", "devdocs.io", "learn.microsoft.com", "docs.rs"], "keywords": ["documentation", "api reference", "docs"]},
+    {"folder": "Dev/Cloud & DevOps", "tags": ["dev", "devops"], "domains": ["aws.amazon.com", "cloud.google.com", "azure.microsoft.com", "vercel.com", "netlify.com", "cloudflare.com", "docker.com", "kubernetes.io"], "keywords": ["kubernetes", "terraform", "docker", "ci/cd", "devops"]},
+    {"folder": "AI & ML", "tags": ["ai"], "domains": ["huggingface.co", "openai.com", "anthropic.com", "arxiv.org", "kaggle.com", "pytorch.org", "tensorflow.org"], "keywords": ["machine learning", "llm", "neural network", "deep learning", "gpt", "transformer"]},
+    {"folder": "News & Reading", "tags": ["news"], "domains": ["news.ycombinator.com", "bbc.com", "nytimes.com", "theguardian.com", "reuters.com", "theverge.com", "techcrunch.com", "arstechnica.com", "wired.com"], "keywords": ["breaking news", "headlines"]},
+    {"folder": "Blogs & Articles", "tags": ["article"], "domains": ["medium.com", "substack.com", "dev.to", "hashnode.dev", "wordpress.com", "blogspot.com"], "keywords": ["blog", "tutorial", "how to", "guide"]},
+    {"folder": "Video", "tags": ["video"], "domains": ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv", "dailymotion.com"], "keywords": ["video", "watch"]},
+    {"folder": "Social", "tags": ["social"], "domains": ["twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com", "reddit.com", "mastodon.social", "threads.net"], "keywords": []},
+    {"folder": "Shopping", "tags": ["shopping"], "domains": ["amazon.com", "ebay.com", "etsy.com", "aliexpress.com", "walmart.com", "bestbuy.com"], "keywords": ["buy", "price", "deal", "shop"]},
+    {"folder": "Finance", "tags": ["finance"], "domains": ["paypal.com", "stripe.com", "coinbase.com", "binance.com", "bloomberg.com", "investopedia.com", "finance.yahoo.com"], "keywords": ["invest", "stock", "bank", "crypto", "budget"]},
+    {"folder": "Learning", "tags": ["learning"], "domains": ["coursera.org", "udemy.com", "edx.org", "khanacademy.org", "freecodecamp.org", "pluralsight.com", "wikipedia.org"], "keywords": ["course", "lesson", "learn", "curriculum"]},
+    {"folder": "Design & Media", "tags": ["design"], "domains": ["figma.com", "dribbble.com", "behance.net", "unsplash.com", "canva.com", "pexels.com"], "keywords": ["design", "typography", "icon", "illustration", "ui kit"]},
+    {"folder": "Productivity", "tags": ["productivity"], "domains": ["notion.so", "trello.com", "asana.com", "todoist.com", "airtable.com", "slack.com", "docs.google.com", "drive.google.com"], "keywords": ["productivity", "template", "planner"]},
+    {"folder": "Travel", "tags": ["travel"], "domains": ["booking.com", "airbnb.com", "tripadvisor.com", "expedia.com", "skyscanner.com", "maps.google.com"], "keywords": ["hotel", "flight", "itinerary", "travel"]},
+    {"folder": "Food & Health", "tags": ["lifestyle"], "domains": ["allrecipes.com", "nih.gov", "who.int", "webmd.com", "mayoclinic.org"], "keywords": ["recipe", "nutrition", "workout", "health"]},
+    {"folder": "Tools & Utilities", "tags": ["tool"], "domains": ["alternativeto.net", "producthunt.com", "regex101.com", "jsonformatter.org", "ilovepdf.com"], "keywords": ["converter", "generator", "online tool", "free tool"]}
+  ]
+}

@@ -1,0 +1,10 @@
+--- a/scripts/mhbm/browsers.py
++++ b/scripts/mhbm/browsers.py
+@@ -237,6 +237,6 @@
+             return parse_places(copy)
+         if copy.suffix == ".plist":
+             return parse_safari(plistlib.loads(copy.read_bytes()))
+-        return formats.parse_chrome(json.loads(copy.read_text(encoding="utf-8")))
++        return formats.parse_chrome(json.loads(copy.read_text(encoding="utf-8-sig")))
+     finally:
+         shutil.rmtree(copy.parent, ignore_errors=True)

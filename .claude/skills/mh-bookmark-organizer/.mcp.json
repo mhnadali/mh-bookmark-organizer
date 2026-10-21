@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "bookmarks": {
+      "command": "${user_config.python}",
+      "args": [
+        "-c",
+        "import runpy, sys; sys.path.pop(0); runpy.run_module('mhbm.mcp', run_name='__main__')",
+        "--home",
+        "${user_config.library_dir}"
+      ],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/scripts",
+        "MHBM_MCP_READ_ONLY": "${user_config.read_only}",
+        "MHBM_MCP_NO_NETWORK": "${user_config.no_network}"
+      }
+    }
+  }
+}

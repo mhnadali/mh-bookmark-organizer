@@ -1,0 +1,6 @@
+files while 'Firefox' runs: ['places.sqlite', 'places.sqlite-shm', 'places.sqlite-wal'] | db size 12288 wal size 412032
+browsers.load on hot db (copies db+wal+shm): 50 bookmarks
+naive copy of places.sqlite only: 0 bookmarks (uncheckpointed rows lost)
+db + wal without -shm: 50 bookmarks
+torn copy (old db + newer wal): 51 bookmarks (expected 50 old + maybe the post-checkpoint row; no error)
+online backup API from the live db: 51 bookmarks (consistent, includes WAL)

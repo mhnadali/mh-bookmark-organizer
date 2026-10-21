@@ -1,0 +1,3 @@
+real Firefox backup: 3.36 MB -> 11.84 MB JSON; PyPI lz4 (C) 22 ms
+orig     lz4 decode 1.16s | places.sqlite load 1.65s (49580 bookmarks, 525 folders) | jsonlz4 load 2.90s (49581 bookmarks) | peak RSS 154 MB
+patched  lz4 decode 0.65s | places.sqlite load 1.89s (49580 bookmarks, 525 folders) | jsonlz4 load 2.06s (49580 bookmarks) | peak RSS 154 MB

@@ -1,0 +1,2 @@
+--- sqlite: read 49580 bookmarks, truth 49580; missing 0, unexpected 0
+--- jsonlz4: read 49580 bookmarks, truth 49580; missing 0, unexpected 0

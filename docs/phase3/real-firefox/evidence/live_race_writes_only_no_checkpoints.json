@@ -1,0 +1,47 @@
+{
+ "phase_A": {
+  "files": {
+   ".parentlock": 0,
+   "lock": 16,
+   "places.sqlite": 5242880,
+   "places.sqlite-wal": 2459432
+  },
+  "lock_target": "127.0.0.1:+28037",
+  "direct_ro": "OperationalError: database is locked",
+  "direct_immutable": "opened; bookmarks=447",
+  "direct_ro_user_version": "OperationalError: database is locked",
+  "mhbm_load_live": "408 bookmarks in 75 ms"
+ },
+ "phase_B": [
+  {
+   "variant": "baseline",
+   "copies": 120,
+   "ok": 118,
+   "bad": 2,
+   "details": {
+    "integrity_check: row 1 missing from index moz_bookmarks_itemlastmodifiedindex; row 5 missing from index moz_bookmarks_itemlastmodifiedindex": 1,
+    "integrity_check: row 474 missing from index moz_places_altfrecencyindex; row 474 missing from index moz_places_originidindex": 1
+   },
+   "copy_stats": {
+    "copies": 120,
+    "changed": 114,
+    "wal_reset": 84,
+    "db_changed": 84
+   }
+  },
+  {
+   "variant": "shipped",
+   "copies": 120,
+   "ok": 48,
+   "bad": 0,
+   "details": {},
+   "refused": 72,
+   "copy_stats": null
+  }
+ ],
+ "writer": {
+  "inserted": 5460,
+  "ckpts": 1,
+  "errors": []
+ }
+}

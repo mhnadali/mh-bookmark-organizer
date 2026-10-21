@@ -1,0 +1,15 @@
+# The sdist is the whole skill folder minus build debris: the engine (scripts/ is found by pyproject.toml), the tests and their fixtures, the
+# browser extension, the documentation and the Claude Code and Codex plugin files. The wheel holds the engine only.
+include README.md CHANGELOG.md CONTRIBUTING.md TROUBLESHOOTING.md SKILL.md RELEASING.md requirements-dev.txt requirements-release.in requirements-release.txt
+include LICENSE* COPYING*
+include .mcp.json .codex-mcp.json scripts/codex_mcp.py
+recursive-include .claude-plugin *.json
+recursive-include .codex-plugin *.json
+recursive-include codex *
+recursive-include agents *.md
+recursive-include extension *
+recursive-include tests *
+recursive-include tools *.py
+prune extension/node_modules
+prune tests/realbrowser/node_modules
+global-exclude __pycache__ *.py[cod] .DS_Store .mypy_cache .ruff_cache
