@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..limits import MAX_IMPORT_BYTES
 from . import validate
 from .paths import PathError
 from .plans import ToolError
 
-MAX_IMPORT_BYTES = 256 << 20
 # literal copies of browsers.ALL / formats.READ_FORMATS / formats.WRITE_FORMATS (minus "obsidian": it writes a directory, this tool writes one new
 # file): this process must not import the heavy modules (a test keeps them equal)
 BROWSERS = ["chrome", "chromium", "brave", "edge", "vivaldi", "opera", "opera-gx", "yandex", "firefox", "librewolf", "waterfox", "floorp", "zen", "safari"]
@@ -236,30 +236,43 @@ def build_apply_plan(args, ctx):
     return base
 
 
-def _read_all(fd: int, limit: int) -> bytes:
-    chunks, total = [], 0
-    with os.fdopen(fd, "rb") as f:
-        while True:
-            chunk = f.read(1 << 20)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > limit:
-                raise PathError(f"the file is larger than the {limit // (1 << 20)} MiB limit")
-            chunks.append(chunk)
-    return b"".join(chunks)
+def _copy_limited(source, destination, limit: int) -> int:
+    """Copy a verified descriptor without retaining the whole import in this process."""
+    total = 0
+    while True:
+        chunk = source.read(1 << 20)
+        if not chunk:
+            return total
+        total += len(chunk)
+        if total > limit:
+            raise PathError(f"the file is larger than the {limit // (1 << 20)} MiB limit")
+        destination.write(chunk)
 
 
 def build_import_file(args, ctx):
     fd, _size = ctx.policy.open_for_read(args["path"], MAX_IMPORT_BYTES)
-    data = _read_all(fd, MAX_IMPORT_BYTES)
-    suffix = re.sub(r"[^a-z0-9.]", "", os.path.splitext(args["path"])[1].lower())[:8]
-    ctx.tmp.mkdir(parents=True, exist_ok=True)
-    tmp = ctx.tmp / f"imp-{secrets.token_hex(6)}{suffix}"
-    tmp.write_bytes(data)                                        # one read through the verified descriptor; the CLI only sees this copy
-    base = cli("import", opts=[("format", "--format", "val"), ("skip_existing", "--skip-existing", "switch")])(args, ctx)
-    base.argv += ["--", str(tmp)]
-    base.cleanup.append(lambda: _unlink(str(tmp)))
+    tmp = None
+    try:
+        suffix = re.sub(r"[^a-z0-9.]", "", os.path.splitext(args["path"])[1].lower())[:8]
+        ctx.tmp.mkdir(parents=True, exist_ok=True)
+        tmp = ctx.tmp / f"imp-{secrets.token_hex(6)}{suffix}"
+        with os.fdopen(fd, "rb") as source, tmp.open("xb") as destination:
+            _copy_limited(source, destination, MAX_IMPORT_BYTES)
+            destination.flush()
+            os.fsync(destination.fileno())
+        if os.name != "nt":
+            os.chmod(tmp, 0o600)
+        base = cli("import", opts=[("format", "--format", "val"), ("skip_existing", "--skip-existing", "switch")])(args, ctx)
+        base.argv += ["--", str(tmp)]
+        base.cleanup.append(lambda: _unlink(str(tmp)))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if tmp is not None:
+            _unlink(str(tmp))
+        raise
     shown = args["path"]
     base.post = lambda output: dict(output, source=shown)
     return base

@@ -20,6 +20,8 @@ class UiCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Stop the HTTP server before deleting its database on Windows.
+        self.addCleanup(self.stop)
         lib = Library(self.tmp.name)
         bms = [Bookmark(url=f"https://a{i}.example/{i}", title=f"Kubernetes operator {i}", folder="Dev", id=f"d{i}", tags=["k8s"]) for i in range(6)]
         bms += [Bookmark(url=f"https://food.example/{i}", title=f"Pasta recipe {i} | Site", folder="Food", id=f"f{i}") for i in range(6)]
@@ -31,7 +33,6 @@ class UiCase(unittest.TestCase):
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        self.addCleanup(self.stop)
 
     def stop(self):
         self.server.shutdown()
@@ -50,10 +51,24 @@ class UiCase(unittest.TestCase):
         if body is not None:
             data = json.dumps(body) if ctype == "application/json" else body
             h["Content-Type"] = ctype
+            h["Content-Length"] = str(len(data.encode("utf-8") if isinstance(data, str) else data))
+        h["Connection"] = "close"
         c.request(method, path, data, h)
-        r = c.getresponse()
-        raw = r.read()
-        c.close()
+        try:
+            r = c.getresponse()
+            raw = r.read()
+        except ConnectionResetError:
+            # The server can reject a request before consuming its body;
+            # close the connection and retry without a body to read the status.
+            c.close()
+            h.pop("Content-Length", None)
+            h.pop("Content-Type", None)
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+            c.request(method, path, None, h)
+            r = c.getresponse()
+            raw = r.read()
+        finally:
+            c.close()
         try:
             return r.status, json.loads(raw)
         except ValueError:

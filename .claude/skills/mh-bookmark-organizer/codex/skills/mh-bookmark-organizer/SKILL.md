@@ -15,6 +15,8 @@ Use the `bookmarks` MCP server whenever its tools (`bm_stats`, `bm_organize`, ..
 PYTHONPATH=<this plugin>/scripts python3 -m mhbm --home <library folder> <command>     # or, with the package installed: mhbm <command>
 ```
 
+On Windows, use `py -3` (or `python`) and set `PYTHONPATH` with Windows path syntax.
+
 `<this plugin>` is three folders above this file (`../../..`); `mhbm doctor` checks the setup.
 
 ## Safety rules (always follow)
@@ -47,5 +49,7 @@ The plugin starts the server itself. The library lives in `~/.mh-bookmark-organi
 ```bash
 codex mcp add bookmarks -- python3 <repo>/.claude/skills/mh-bookmark-organizer/scripts/codex_mcp.py
 ```
+
+On Windows, replace `python3` with `python` and use a quoted Windows path, for example `codex mcp add bookmarks -- python "D:\repo\.claude\skills\mh-bookmark-organizer\scripts\codex_mcp.py"`.
 
 Another library folder or other folders for files: add `--env MHBM_HOME=/path/to/library` and `--env MHBM_MCP_ALLOW_DIRS=/path/one:/path/two` (`;` between folders on Windows) before the `--`. Further options as environment variables: `MHBM_MCP_READ_ONLY=1` offers only tools that cannot change the library, `MHBM_MCP_NO_NETWORK=1` hides the tools that contact bookmarked sites. With the Python package installed (`pip install`), `codex mcp add bookmarks -- mhbm-mcp --home ~/.mh-bookmark-organizer --allow-dir ~/Downloads` does the same.

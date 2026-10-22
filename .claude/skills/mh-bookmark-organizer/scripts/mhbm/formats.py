@@ -8,12 +8,15 @@ import html
 import io
 import json
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
+from .limits import MAX_IMPORT_BOOKMARKS, MAX_IMPORT_BYTES
 from .model import Bookmark, clean_folder, esc_name, unesc_name
 
 WEBKIT_EPOCH_OFFSET = 11644473600  # seconds between 1601-01-01 and 1970-01-01
@@ -90,16 +93,29 @@ def iso(ts: int) -> str:
 
 
 # ------------------------------------------------------------------ sniffing
+def _read_bounded_text(path: Path) -> str:
+    with path.open("rb") as source:
+        raw = source.read(MAX_IMPORT_BYTES + 1)
+    if len(raw) > MAX_IMPORT_BYTES:
+        raise FormatError(f"{path}: file exceeds the {MAX_IMPORT_BYTES // (1 << 20)} MiB import limit")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
 def sniff(path: Path) -> str:
+    path = Path(path)
+    return _sniff_text(path, _read_bounded_text(path))
+
+
+def _sniff_text(path: Path, text: str) -> str:
     suffix = path.suffix.lower()
-    head = path.read_text(encoding="utf-8-sig", errors="replace")[:4096].lstrip()   # utf-8-sig: Chromium accepts a BOM, json.loads does not
+    head = text[:4096].lstrip()
     if suffix in (".html", ".htm") or head[:200].upper().startswith(("<!DOCTYPE NETSCAPE", "<!DOCTYPE HTML")):
         return "html"
     if suffix == ".csv":
         return "csv"
     if head.startswith(("{", "[")):
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            data = json.loads(text)
         except json.JSONDecodeError as e:
             raise FormatError(f"{path}: invalid JSON ({e})") from e
         if isinstance(data, dict) and "roots" in data:
@@ -111,16 +127,26 @@ def sniff(path: Path) -> str:
 
 
 def read_file(path, fmt: str | None = None) -> ParsedList:
+    path = Path(path)
     try:
-        return _read_file(path, fmt)
+        size = path.stat().st_size
+    except OSError as e:
+        raise FormatError(f"{path}: cannot inspect input file: {e}") from e
+    if size > MAX_IMPORT_BYTES:
+        raise FormatError(f"{path}: file exceeds the {MAX_IMPORT_BYTES // (1 << 20)} MiB import limit")
+    try:
+        parsed = _read_file(path, fmt)
     except RecursionError as e:  # absurdly nested JSON
         raise FormatError(f"{path}: nested too deeply to read") from e
+    if len(parsed) > MAX_IMPORT_BOOKMARKS:
+        raise FormatError(f"{path}: exceeds the limit of {MAX_IMPORT_BOOKMARKS:,} bookmarks")
+    return parsed
 
 
 def _read_file(path, fmt: str | None = None) -> ParsedList:
     path = Path(path)
-    fmt = fmt or sniff(path)
-    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    text = _read_bounded_text(path)
+    fmt = fmt or _sniff_text(path, text)
     readers = {
         "html": parse_netscape,
         "chrome": lambda t: parse_chrome(json.loads(t)),
@@ -759,35 +785,43 @@ def _safe_name(s: str, limit: int = 80) -> str:
 
 
 def write_obsidian(bms, out_dir) -> int:
-    """One note per bookmark with YAML front matter, filed in subfolders; returns notes written."""
+    """Write a new Obsidian vault without overwriting any existing user files."""
     root = Path(out_dir).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    index: dict = {}
-    for b in bms:
-        parts = [_safe_name(unesc_name(p), 40) for p in b.folder.split("/") if p]
-        while len("/".join(parts)) > 120 and len(parts) > 1:  # very deep trees: keep the innermost folders (full path stays in front matter)
-            parts.pop(0)
-        folder = root.joinpath(*parts)
-        name = f"{_safe_name(b.title or b.url, 60)} ({b.id[:6]}).md"
-        path = (folder / name).resolve()
-        if root not in path.parents:  # defence in depth against traversal
-            continue
-        folder.mkdir(parents=True, exist_ok=True)
-        fm = {"url": b.url, "title": b.title, "tags": b.tags, "folder": unesc_name(b.folder),
-              "added": iso(b.added), "status": b.status}
-        lines = ["---"] + [f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in fm.items() if v not in ("", [], None)]
-        lines += ["---", "", f"# {_md_text(b.title or b.url)}", "", f"<{_md_url(b.url)}>", ""]
-        if b.notes:
-            lines += [b.notes, ""]
-        if b.content:
-            lines += ["> " + " ".join(b.content[:600].split()), ""]
-        path.write_text("\n".join(lines), encoding="utf-8")
-        index.setdefault(unesc_name(b.folder) or "Unfiled", []).append(path.stem)
-    idx = ["# Bookmarks index", ""]
-    for folder in sorted(index, key=str.lower):
-        idx += [f"## {_md_text(folder)}", ""] + [f"- [[{n}]]" for n in sorted(index[folder])] + [""]
-    (root / "_index.md").write_text("\n".join(idx), encoding="utf-8")
-    return sum(len(v) for v in index.values())
+    if root.exists():
+        raise FormatError(f"{root}: Obsidian export requires a new directory; existing files are never overwritten")
+    root.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{root.name}.mhbm-", dir=root.parent))
+    try:
+        index: dict = {}
+        for b in bms:
+            parts = [_safe_name(unesc_name(p), 40) for p in b.folder.split("/") if p]
+            while len("/".join(parts)) > 120 and len(parts) > 1:  # very deep trees: keep the innermost folders (full path stays in front matter)
+                parts.pop(0)
+            folder = stage.joinpath(*parts)
+            name = f"{_safe_name(b.title or b.url, 60)} ({b.id[:6]}).md"
+            path = (folder / name).resolve()
+            if stage not in path.parents:  # defence in depth against traversal
+                continue
+            folder.mkdir(parents=True, exist_ok=True)
+            fm = {"url": b.url, "title": b.title, "tags": b.tags, "folder": unesc_name(b.folder),
+                  "added": iso(b.added), "status": b.status}
+            lines = ["---"] + [f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in fm.items() if v not in ("", [], None)]
+            lines += ["---", "", f"# {_md_text(b.title or b.url)}", "", f"<{_md_url(b.url)}>", ""]
+            if b.notes:
+                lines += [b.notes, ""]
+            if b.content:
+                lines += ["> " + " ".join(b.content[:600].split()), ""]
+            path.write_text("\n".join(lines), encoding="utf-8")
+            index.setdefault(unesc_name(b.folder) or "Unfiled", []).append(path.stem)
+        idx = ["# Bookmarks index", ""]
+        for folder in sorted(index, key=str.lower):
+            idx += [f"## {_md_text(folder)}", ""] + [f"- [[{n}]]" for n in sorted(index[folder])] + [""]
+        (stage / "_index.md").write_text("\n".join(idx), encoding="utf-8")
+        stage.rename(root)  # publish the complete vault only after every note succeeds
+        return sum(len(v) for v in index.values())
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
 
 
 # ------------------------------------------------- other services (best effort)

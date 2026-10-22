@@ -455,7 +455,8 @@ class Plans(Base):
         s = self.start()
         plan = self.result(s, "bm_restructure")["structuredContent"]
         d = s.home + "/plans"
-        self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
+        if POSIX:  # Windows inherits the user's private temp-directory ACL instead of POSIX mode bits.
+            self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
         self.assertEqual(sorted(os.listdir(d)), sorted([plan["plan_id"] + ".json", plan["plan_id"] + ".meta.json"]))
 
     def test_prune_plan_is_built_from_the_listing(self):
@@ -833,7 +834,7 @@ w = Wire(claim=True)
 assert w.claimed
 print("STRAY print")
 os.write(1, b"STRAY os.write\n")
-subprocess.run(["echo", "STRAY child"])
+subprocess.run([sys.executable, "-c", "print('STRAY child')"], check=True)
 try:
     input()
     print("input() returned data!", file=sys.stderr)
@@ -988,9 +989,10 @@ class ReviewFindings(Base):
             self.alive(s)
             s.notify("notifications/roots/list_changed")
         req = s.recv_json(10)
-        s.send({"jsonrpc": "2.0", "id": req["id"], "result": {"roots": [{"uri": "file://" + allowed}]}})
+        s.send({"jsonrpc": "2.0", "id": req["id"], "result": {"roots": [{"uri": pathlib.Path(allowed).as_uri()}]}})
         time.sleep(0.3)
-        self.assertFalse(self.result(s, "bm_import_file", {"path": os.path.join(allowed, "in.html")})["isError"])
+        imported = self.result(s, "bm_import_file", {"path": os.path.join(allowed, "in.html")})
+        self.assertFalse(imported["isError"], imported)
         s.notify("notifications/roots/list_changed")
         req = s.recv_json(10)
         s.send({"jsonrpc": "2.0", "id": req["id"], "result": {"roots": []}})            # the client closed its folder: the permission goes with it

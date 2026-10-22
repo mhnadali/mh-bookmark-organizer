@@ -71,7 +71,12 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in extra:
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # A client may close immediately after receiving an error status;
+            # Windows reports that orderly disconnect as a reset.
+            pass
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))

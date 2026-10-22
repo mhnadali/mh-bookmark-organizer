@@ -40,6 +40,20 @@ def problem(n=1500, d=40, seed=5):
     return X, y
 
 
+class LogisticInputValidation(unittest.TestCase):
+    def test_empty_training_rows_have_a_clear_error(self):
+        with self.assertRaisesRegex(ValueError, "at least one training row"):
+            learn.fit_logistic([], [])
+
+    def test_mismatched_labels_have_a_clear_error(self):
+        with self.assertRaisesRegex(ValueError, "same length"):
+            learn.fit_logistic([[1.0]], [])
+
+    def test_ragged_rows_have_a_clear_error(self):
+        with self.assertRaisesRegex(ValueError, "same non-zero number"):
+            learn.fit_logistic([[1.0], [1.0, 2.0]], [0.0, 1.0])
+
+
 @unittest.skipUnless(learn._np is not None, "numpy is not installed")
 class NumpyParity(unittest.TestCase):
     def test_the_vectorised_fit_matches_the_pure_python_one(self):

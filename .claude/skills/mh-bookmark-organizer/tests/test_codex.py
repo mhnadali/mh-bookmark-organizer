@@ -77,7 +77,7 @@ class Structure(unittest.TestCase):
 
     def test_server_command_is_what_codex_accepts_and_starts_this_checkout(self):
         server = self.mcp["bookmarks"]
-        self.assertEqual(server["command"], "python3")                # Codex takes a bare executable name or a ./ path, no placeholders
+        self.assertIn(server["command"], {"python", "python3"})      # executable must be directly available in the Codex process PATH
         self.assertEqual(server["args"], ["codex_mcp.py"])             # a script, not -m: the working folder never comes first on the module path
         self.assertEqual(server["cwd"], "./scripts")                  # relative to the plugin: Codex has no ${PLUGIN_ROOT} for args or env
         self.assertTrue((SKILL / "scripts" / server["args"][0]).is_file())
@@ -182,7 +182,8 @@ class Process(unittest.TestCase):
         self.assertIn("outside the allowed directories", out[2]["result"]["content"][0]["text"])
 
 
-@unittest.skipUnless(MARKETPLACE.exists() and shutil.which("codex"), "needs the repository checkout and the codex command")
+@unittest.skipUnless(MARKETPLACE.exists() and shutil.which("codex") and os.environ.get("MHBM_TEST_REAL_CODEX"),
+                     "set MHBM_TEST_REAL_CODEX=1 to exercise the installed Codex CLI")
 class RealCodex(unittest.TestCase):
     """The authority: Codex itself reads the marketplace, installs the plugin, starts the server and relays a tool call."""
 

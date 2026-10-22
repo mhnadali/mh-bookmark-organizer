@@ -354,7 +354,7 @@ def register(add, apply_flag, net_flags):
 
     sp = add("export", cmd_export, "export to html|chrome|csv|json|md|obsidian|raindrop|pocket|linkwarden|karakeep|instapaper")
     sp.add_argument("--format", choices=formats.WRITE_FORMATS, default="html")
-    sp.add_argument("--out", help="file (directory for obsidian)")
+    sp.add_argument("--out", help="new file (new directory for obsidian; existing destinations are not overwritten)")
     sp.add_argument("--folder")
     sp.add_argument("--tag")
 

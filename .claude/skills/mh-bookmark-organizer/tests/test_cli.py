@@ -19,6 +19,10 @@ class CliCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # CLI calls keep their Library handles open until explicitly closed.
+        # Register this after tmp.cleanup so unittest's LIFO cleanup closes
+        # SQLite handles before Windows removes the temporary directory.
+        self.addCleanup(cli.close_all)
         self.dir = Path(self.tmp.name)
         self.home = str(self.dir / "lib")
 

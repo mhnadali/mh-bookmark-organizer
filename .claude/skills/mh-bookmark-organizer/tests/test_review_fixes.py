@@ -164,7 +164,10 @@ class ReadsAndWrites(unittest.TestCase):
             self.assertEqual(lib.fingerprint(), lib.fingerprint())              # and is stable otherwise
 
     def test_read_only_works_in_a_folder_whose_name_has_uri_characters(self):
-        for name in ("my #1 marks", "a?b", "50%20off"):
+        names = ("my #1 marks", "50%20off")
+        if os.name != "nt":
+            names += ("a?b",)
+        for name in names:
             with self.subTest(name):
                 home = self.dir / name
                 with Library(home) as lib:

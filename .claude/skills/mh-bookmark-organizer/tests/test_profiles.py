@@ -408,7 +408,10 @@ class Selecting(CliCase):
 class Reading(unittest.TestCase):
     def test_places_database_in_a_folder_whose_name_is_not_uri_safe(self):
         with tempfile.TemporaryDirectory() as d:
-            for odd in ("a b", "a#b", "a?b", "a%41b", "persian-محمد"):
+            names = ("a b", "a#b", "a%41b", "persian-محمد")
+            if os.name != "nt":
+                names += ("a?b",)
+            for odd in names:
                 with self.subTest(folder=odd):
                     db = places_db(Path(d, odd, "places.sqlite"))
                     self.assertEqual([b.url for b in browsers.parse_places(db)], ["https://a.example/"])

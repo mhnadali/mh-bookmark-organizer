@@ -34,6 +34,22 @@ def fd_path(fd: int):
         if sys.platform == "darwin":                             # pragma: no cover - macOS only
             import fcntl
             return fcntl.fcntl(fd, 50, b"\0" * 1024).split(b"\0", 1)[0].decode()   # F_GETPATH
+        if sys.platform == "win32":                              # pragma: no cover - Windows only
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_path = kernel32.GetFinalPathNameByHandleW
+            get_path.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32)
+            get_path.restype = ctypes.c_uint32
+            buf = ctypes.create_unicode_buffer(32768)
+            size = get_path(msvcrt.get_osfhandle(fd), buf, len(buf), 0)
+            if not size or size >= len(buf):
+                return None
+            path = buf.value
+            if path.startswith("\\\\?\\UNC\\"):
+                return "\\\\" + path[8:]
+            return path[4:] if path.startswith("\\\\?\\") else path
     except (OSError, ValueError):
         return None
     return None
@@ -93,7 +109,9 @@ class PathPolicy:
 
     def _verify(self, fd: int, what: str) -> None:
         actual = fd_path(fd)
-        if actual is not None and not self.inside(os.path.realpath(actual.replace(" (deleted)", ""))):
+        if actual is None:
+            raise PathError(f"cannot verify the location of {what} on this platform")
+        if not self.inside(os.path.realpath(actual.replace(" (deleted)", ""))):
             raise PathError(f"{what} resolves outside the allowed directories")
 
     # ------------------------------------------------------------------ read

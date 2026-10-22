@@ -464,12 +464,19 @@ def fit_logistic(rows, labels, epochs=None, lr=0.2, l2=1e-4, batch=256, seed=0):
     The same algorithm runs in pure Python or, when numpy is available, vectorised (about 10-30 times faster); both draw
     the same mini-batches, so they agree to rounding error.
     """
+    if not rows:
+        raise ValueError("at least one training row is required")
+    if len(labels) != len(rows):
+        raise ValueError("training rows and labels must have the same length")
+    dimensions = len(rows[0])
+    if dimensions == 0 or any(len(row) != dimensions for row in rows):
+        raise ValueError("training rows must have the same non-zero number of features")
     if not epochs:  # a small problem has few mini-batches per pass: give it enough passes for a stable fit
         per_pass = max(1, (len(rows) + batch - 1) // batch)
         epochs = min(MAX_EPOCHS, max(STACK_EPOCHS, -(-MIN_STEPS // per_pass)))
     if numpy_active() and len(rows) * len(rows[0]) >= 2000:
         return _fit_logistic_numpy(rows, labels, epochs, lr, l2, batch, seed)
-    n, d = len(rows), len(rows[0])
+    n, d = len(rows), dimensions
     cols = list(zip(*rows))
     mu = [sum(c) / n for c in cols]
     sd = [math.sqrt(sum((x - m) ** 2 for x in c) / n) + 1e-6 for c, m in zip(cols, mu)]

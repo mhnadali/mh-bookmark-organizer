@@ -27,7 +27,7 @@ extension and a local web page. It uses the Python standard library only, needs 
 
 ## Install
 
-Python 3.9+ must be available as `python3` (`py -3` on Windows). 
+Python 3.9+ must be on `PATH`: the Codex plugin uses `python` (also supplied by the Windows Python launcher setup); manual commands use `python3` on macOS/Linux or `py -3`/`python` on Windows.
 ### Claude Code
 
 ```
@@ -57,7 +57,7 @@ Without installing anything (the engine is plain Python files):
   "env": {"PYTHONPATH": "/path/to/mh-bookmark-organizer/.claude/skills/mh-bookmark-organizer/scripts"}}}}
 ```
 
-or, after `pip install .` in `.claude/skills/mh-bookmark-organizer`, `"command": "mhbm-mcp"` with the same arguments and no `env`. Add `--read-only` if the client should
+On Windows, use `"command": "python"` for the equivalent configuration. After `pip install .` in `.claude/skills/mh-bookmark-organizer`, `"command": "mhbm-mcp"` works on any platform with the same arguments and no `env`. Add `--read-only` if the client should
 only look, `--no-network` to hide the tools that contact other sites. (With `python3 -m`, the client's working folder is searched first for the module `mhbm`, so do not start the server
 from a folder that contains one; the plugins avoid this by running a script instead.)
 
@@ -195,6 +195,7 @@ The repository's own tests use a synthetic library whose vocabulary is far clean
 - **Network guard.** Only public `http(s)` addresses; every redirect is re-checked; the address that was validated is the address connected to (DNS-rebinding defence); IPv4 addresses hidden in IPv6 or legacy spellings are recognised. Through an HTTP proxy the proxy resolves names. It is a strong guard, not a sandbox.
 - **Untrusted text.** Bookmark titles, notes and archived page text are treated as data, never instructions; archived pages are sanitised single files with a strict CSP (still open them as untrusted).
 - **MCP server.** Pinned to one library folder; file tools reach only allowed directories, open files without following links, never overwrite and never touch the library folder; one child process per call with an allow-listed environment; `--read-only` opens the library read-only so nothing on disk changes.
+- **Imports and exports are bounded.** Bookmark imports are capped at 64 MiB and 250,000 records. Obsidian export builds a complete vault in a staging directory and requires a new destination directory; it refuses to overwrite an existing vault.
 - **Several processes at once** (a scheduled `maintain`, the web UI, the extension, your shell) can share a library (write-ahead logging with a lock wait). A library written by an older release is upgraded in one transaction after a copy is saved; one written by a *newer* release is refused instead of damaged.
 - **Supply chain.** No runtime dependencies; GitHub Actions are pinned to commit SHAs; the release pipeline is built for PyPI trusted publishing with hash-pinned tools and reproducible builds.
 
@@ -219,12 +220,21 @@ folders and ask for it by name (`b.html`). If none of those folders exists, impo
 
 To choose the folders yourself, register the server by hand instead of installing the plugin:
 
+On macOS and Linux:
+
 ```bash
 codex mcp add bookmarks --env MHBM_HOME=~/bm-library --env MHBM_MCP_ALLOW_DIRS=~/Downloads:~/exports \
   -- python3 /path/to/mh-bookmark-organizer/.claude/skills/mh-bookmark-organizer/scripts/codex_mcp.py
 ```
 
-(`;` between folders on Windows; `--env MHBM_MCP_READ_ONLY=1` for look-only, `--env MHBM_MCP_NO_NETWORK=1` to hide the network tools.) The server needs `python3` on the `PATH` Codex uses.
+On Windows, use `python` and Windows paths (put quotes around paths containing spaces):
+
+```powershell
+codex mcp add bookmarks --env MHBM_HOME="$HOME\bm-library" --env MHBM_MCP_ALLOW_DIRS="$HOME\Downloads;$HOME\exports" `
+  -- python "D:\path\to\mh-bookmark-organizer\.claude\skills\mh-bookmark-organizer\scripts\codex_mcp.py"
+```
+
+(`;` separates folders on Windows; `--env MHBM_MCP_READ_ONLY=1` enables look-only mode, and `--env MHBM_MCP_NO_NETWORK=1` hides network tools.) Ensure the selected Python command is on the `PATH` inherited by Codex.
 
 What was checked, with Codex CLI 0.163.0 in an isolated home: Codex installs the plugin from the marketplace, lists the skill and the server, starts the server, lists its 29 tools, 4 resources
 and 2 resource templates, relays a tool call that imports a file from `Downloads`, and the server refuses a path outside the allowed folders. `tests/test_codex.py` repeats this whenever the `codex` command is installed.
@@ -265,7 +275,7 @@ Known limits: archiving fetches static HTML only (pages rendered by JavaScript y
 
 ## Project status
 
-- **Version:** 1.5.2 in the tree. 1.6.0 is prepared: the MCP server was rebuilt (the old one could not start; see the [CHANGELOG](.claude/skills/mh-bookmark-organizer/CHANGELOG.md)), the Claude Code and Codex plugins and the PyPI package were added, and many defects found by testing against real browsers were fixed.
+- **Version:** 1.5.2 is the current version in the tree. 1.6.0 is unreleased work: the MCP server, Claude Code and Codex plugins, and PyPI packaging changes are in the repository but have not been published as a release.
 - **Licence:** none chosen yet. Until a `LICENSE` file is added the default copyright rules apply (all rights reserved); the owner decides. The plugin manifests deliberately declare no licence.
 - **PyPI:** not published. The release pipeline (`.github/workflows/release.yml`, [RELEASING.md](.claude/skills/mh-bookmark-organizer/RELEASING.md)) needs the licence, a PyPI trusted-publisher entry and two GitHub environments.
 - **Support:** one-person project; see [SECURITY.md](SECURITY.md) for response expectations. Only the latest release receives fixes.

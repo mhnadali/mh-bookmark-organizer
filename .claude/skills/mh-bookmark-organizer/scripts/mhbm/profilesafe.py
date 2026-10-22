@@ -314,7 +314,10 @@ def backup_file(path: Path, stamp: str | None = None) -> Path:
     tmp = dest.with_name(dest.name + TMP_SUFFIX)
     try:
         shutil.copy2(path, tmp)
-        with open(tmp, "rb") as f:
+        # Open for writing: Windows rejects FlushFileBuffers on a read-only
+        # handle even though POSIX permits fsync on one.
+        with open(tmp, "rb+") as f:
+            f.flush()
             os.fsync(f.fileno())
         try:
             os.link(tmp, dest)                  # fails when the name exists: a backup is never overwritten

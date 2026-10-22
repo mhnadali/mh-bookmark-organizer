@@ -4,6 +4,14 @@ Versions follow the `mhbm.__version__` string; the browser extension has its own
 
 ## Unreleased (1.6.0 in progress)
 
+**Safety and platform reliability follow-ups**
+- Bookmark imports are bounded to 64 MiB and 250,000 records; MCP copies the opened, verified file to its private temporary area in bounded chunks instead of holding another full in-memory copy.
+- Obsidian export stages a complete vault before publishing it and refuses an existing destination, so a repeated export cannot overwrite notes or `_index.md`.
+- MCP path checks now fail closed when a platform cannot resolve an open descriptor; Windows resolves the final path from the file handle before allowing file access.
+- Logistic-regression training validates empty, mismatched and ragged inputs and returns a clear `ValueError` instead of failing at an incidental index access.
+- CI runs real Chromium and Firefox jobs as failing checks and adds Python 3.11 to the macOS and Windows test matrix. Hosted Linux results are still required before the release can be considered verified.
+- Codex setup guidance now distinguishes Windows `python`/`py -3` from macOS/Linux `python3`.
+
 **OpenAI Codex**
 - The skill folder is now also a Codex plugin: `.codex-plugin/plugin.json`, the MCP server `bookmarks` (`.codex-mcp.json`) and a Codex-written skill
   (`codex/skills/mh-bookmark-organizer/`, MCP-first, same safety rules, with `agents/openai.yaml`). Codex reads the existing marketplace file, so

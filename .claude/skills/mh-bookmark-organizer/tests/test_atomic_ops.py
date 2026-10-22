@@ -123,6 +123,7 @@ class Killed(unittest.TestCase):
                 self.assertEqual(snapshot(lib), before)
                 self.assertEqual(lib.health()["integrity"], "ok")
 
+    @unittest.skipUnless(hasattr(signal, "SIGKILL"), "needs POSIX process signals")
     def test_apply_plan_killed_at_any_moment_is_all_or_nothing(self):
         """The audit saw 5 of 18 random kills leave 14,400-18,400 of 20,000 rows. Whenever the signal lands, the library is the old one
         or the new one, with its journal."""

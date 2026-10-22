@@ -171,6 +171,7 @@ disk changes); the file tools reach only the allowed directories (`--allow-dir`,
 the working directory), open files without following links, never overwrite, and never touch the library folder; every argument is
 validated against a strict schema (no coercion: `"false"` is not `false`); each call runs in its own process with a time limit,
 cancellation and a minimal environment; results are size-capped and say so when they are cut. Details: [SECURITY.md](https://github.com/mhnadali/mh-bookmark-organizer/blob/main/SECURITY.md).
+All bookmark imports are limited to 64 MiB and 250,000 records. Obsidian export stages a complete vault and requires a new destination directory; it refuses to overwrite an existing vault.
 **Upgrading from 1.5.x:** the old server could not start (see the 1.5.2 notes), so nothing depends on its tool names; the new names and
 the `plan_id` flow are listed in the [CHANGELOG](https://github.com/mhnadali/mh-bookmark-organizer/blob/main/.claude/skills/mh-bookmark-organizer/CHANGELOG.md). The design notes are in [docs/phase3/mcp-audit.md](https://github.com/mhnadali/mh-bookmark-organizer/blob/main/docs/phase3/mcp-audit.md).
 

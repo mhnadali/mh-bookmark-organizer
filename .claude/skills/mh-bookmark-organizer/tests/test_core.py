@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import common  # noqa: F401
 from mhbm import dedupe, formats
@@ -25,6 +26,25 @@ NETSCAPE = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
   <DT><A HREF="http://example.com/post">Post again</A>
 </DL><p>
 """
+
+
+class ImportLimits(unittest.TestCase):
+    def test_import_rejects_oversized_file_before_reading(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "bookmarks.html")
+            with path.open("wb") as f:
+                f.truncate((3 << 20) + 1)
+            with mock.patch.object(formats, "MAX_IMPORT_BYTES", 3 << 20):
+                with self.assertRaisesRegex(formats.FormatError, "3 MiB import limit"):
+                    formats.read_file(path, "html")
+
+    def test_import_rejects_too_many_bookmarks(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "bookmarks.html")
+            path.write_text('<DL><A HREF="https://a.example">A</A><A HREF="https://b.example">B</A></DL>', encoding="utf-8")
+            with mock.patch.object(formats, "MAX_IMPORT_BOOKMARKS", 1):
+                with self.assertRaisesRegex(formats.FormatError, "limit of 1 bookmarks"):
+                    formats.read_file(path, "html")
 
 
 class UrlNorm(unittest.TestCase):
@@ -183,6 +203,27 @@ class Formats(unittest.TestCase):
             self.assertIn('url: "https://a.com"', note)
             self.assertTrue(Path(d, "vault", "_index.md").exists())
 
+    def test_obsidian_export_refuses_existing_directory_without_changing_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            vault = Path(d, "vault")
+            vault.mkdir()
+            existing = vault / "keep.md"
+            existing.write_text("user content", encoding="utf-8")
+            with self.assertRaisesRegex(formats.FormatError, "requires a new directory"):
+                formats.write_obsidian([Bookmark(url="https://a.com", title="A", id="a")], vault)
+            self.assertEqual(existing.read_text(encoding="utf-8"), "user content")
+            self.assertEqual(list(Path(d).glob(".vault.mhbm-*")), [])
+
+    def test_failed_obsidian_export_does_not_publish_a_partial_vault(self):
+        with tempfile.TemporaryDirectory() as d:
+            vault = Path(d, "vault")
+            bms = [Bookmark(url="https://a.com", title="A", id="a")]
+            with mock.patch.object(formats, "_md_text", side_effect=RuntimeError("render failed")):
+                with self.assertRaisesRegex(RuntimeError, "render failed"):
+                    formats.write_obsidian(bms, vault)
+            self.assertFalse(vault.exists())
+            self.assertEqual(list(Path(d).glob(".vault.mhbm-*")), [])
+
 
 class Dedupe(unittest.TestCase):
     def test_exact_merge_keeps_best_and_unions_tags(self):
@@ -248,8 +289,8 @@ class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.lib = Library(self.tmp.name)
-        self.addCleanup(self.lib.close)
         self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.lib.close)
 
     def test_identical_rows_get_distinct_stable_ids(self):
         a, b = Bookmark(url="https://a.com", title="x"), Bookmark(url="https://a.com", title="x")

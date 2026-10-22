@@ -44,8 +44,10 @@ jobs:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
         include:
           - { os: macos-latest, python: "3.9" }
+          - { os: macos-latest, python: "3.11" }
           - { os: macos-latest, python: "3.13" }
           - { os: windows-latest, python: "3.9" }
+          - { os: windows-latest, python: "3.11" }
           - { os: windows-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,10 +135,9 @@ jobs:
             --fixture "$GITHUB_WORKSPACE/.claude/skills/mh-bookmark-organizer/tests/fixtures/messy-library.html" --skip-learn
 
   realbrowser:
-    name: real Chromium (headless) write-back tests
+    name: real Chromium (Xvfb) write-back tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true   # never run on GitHub yet: make it required once it has been seen to pass
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -153,13 +154,12 @@ jobs:
         working-directory: .claude/skills/mh-bookmark-organizer/tests/realbrowser
       - name: A browser must be found (otherwise the tests would all skip and look green)
         run: node tests/realbrowser/driver.js probe
-      - run: python -W error::ResourceWarning -m unittest discover -s tests -p "test_realbrowser.py" -v
+      - run: xvfb-run -a python -W error::ResourceWarning -m unittest discover -s tests -p "test_realbrowser.py" -v
 
   realfirefox:
     name: real Firefox 157 (headless Gecko writes, mhbm reads)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true   # never run on GitHub yet: make it required once it has been seen to pass
     env:
       # conda-forge repack of Mozilla's official Linux build (distribution.ini: mozilla-official); found with tests/real_firefox/pin_firefox.py
       FIREFOX_PKG: firefox-157.0.1-hee9eb32_0.conda
